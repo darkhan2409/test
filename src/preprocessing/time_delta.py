@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -169,6 +169,27 @@ class TimeDeltaEdges:
             "domain": list(self.domain()),
             "intervals": [dict(item) for item in self.intervals()],
         }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> "TimeDeltaEdges":
+        """Загрузить замороженные границы (§28 п.1).
+
+        `labels`, `reserved`, `domain` и `intervals` в артефакте есть, но не
+        читаются: они выводятся из границ, и чтение сделало бы их вторым
+        источником истины. `reserved` вдобавок задан кодом (§25.2) — прочитать
+        его из файла значило бы дать файлу право переименовать
+        `FIRST_EVENT`.
+        """
+        return cls(
+            version=str(state["time_delta_edges_version"]),
+            method=DeltaMethod(state["method"]),
+            requested_count=int(state["requested_bucket_count"]),
+            edges=tuple(Decimal(item) for item in state["edges"]),
+            min_train=Decimal(state["min_train_delta"]),
+            max_train=Decimal(state["max_train_delta"]),
+            sample_size=int(state["sample_size"]),
+            deltas_seen=int(state["deltas_seen"]),
+        )
 
 
 class DeltaSampler:

@@ -37,8 +37,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .artifact_hasher import PreprocessingState, build_state
-from .bucketizer import BucketEdges, BucketizationConfig, fit_bucket_edges, load_bucketization_config
+from .artifact_hasher import PreprocessingState, build_state, verify_state_hash
+from .bucketizer import (
+    BucketEdges,
+    BucketizationConfig,
+    Bucketizer,
+    fit_bucket_edges,
+    load_bucketization_config,
+)
 from .category_normalizer import CategoryMapping, CategoryNormalizer, load_category_mapping
 from .core.canonical import canonical_bytes, canonical_text
 from .core.monitor import DataQualityMonitor
@@ -49,12 +55,14 @@ from .cutoff import CutoffFilter
 from .deduplicator import DedupPolicy, Deduplicator, load_dedup_policy
 from .event_mapper import EventMapper, EventMapping, load_event_mapping
 from .feature_projection import (
+    PROFILE_SECTION,
     FeatureProjector,
     MissingPolicy,
     ProjectedRecord,
     load_feature_schema,
 )
 from .field_policies import TEXT_POLICY_VERSION, FieldPolicies, check_field_policies
+from .output_contract import OutputContractReport, validate_output
 from .fx_normalizer import FxConfig, FXNormalizer, FxRateTable, load_fx_config
 from .identity_resolver import IdentityMapping, IdentityResolver, load_identity_mapping
 from .numeric_validator import NumericValidator
@@ -124,6 +132,49 @@ class BuildPhaseError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Dataset:
+    """Набор сырых записей вместе с его манифестом.
+
+    ENCODE выполняется на любом наборе: TRAIN, golden, а когда появятся
+    разбиения — Validation и Test. Поэтому роль здесь читается, но ничего не
+    запрещает: ограничение — свойство BUILD, а не набора.
+    """
+
+    identifier: str
+    role: str
+    raw_dir: Path
+    manifest: Mapping[str, Any]
+
+    @classmethod
+    def load(cls, raw_dir: Path) -> "Dataset":
+        """Прочитать манифест набора.
+
+        Всё берётся из данных, а не из имени каталога: каталог можно
+        переименовать, скопировать и смонтировать куда угодно, а манифест
+        едет вместе с записями.
+        """
+        manifest_path = raw_dir / DATASET_MANIFEST
+        if not manifest_path.exists():
+            raise BuildPhaseError(
+                f"нет манифеста набора {manifest_path}: неизвестно, что это за набор"
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        identifier = manifest.get("dataset_name")
+        if not identifier:
+            # §31 требует хранить идентификатор датасета. Артефакт без него
+            # не сказал бы, на чём посчитан.
+            raise BuildPhaseError(f"{manifest_path}: в манифесте нет dataset_name (§31)")
+
+        return cls(
+            identifier=identifier,
+            role=str(manifest.get("dataset_role", "")),
+            raw_dir=raw_dir,
+            manifest=manifest,
+        )
+
+
+@dataclass(frozen=True)
 class TrainDataset:
     """Набор, на котором BUILD разрешён (§27).
 
@@ -137,33 +188,18 @@ class TrainDataset:
 
     @classmethod
     def load(cls, raw_dir: Path) -> "TrainDataset":
-        """Прочитать манифест набора и убедиться, что это TRAIN.
+        """Прочитать манифест набора и убедиться, что это TRAIN."""
+        dataset = Dataset.load(raw_dir)
 
-        Роль берётся из данных, а не из имени каталога: каталог можно
-        переименовать, скопировать и смонтировать куда угодно, а манифест
-        едет вместе с записями.
-        """
-        manifest_path = raw_dir / DATASET_MANIFEST
-        if not manifest_path.exists():
+        if dataset.role != TRAIN_ROLE:
             raise BuildPhaseError(
-                f"нет манифеста набора {manifest_path}: неизвестно, TRAIN ли это (§27)"
-            )
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-        role = manifest.get("dataset_role")
-        if role != TRAIN_ROLE:
-            raise BuildPhaseError(
-                f"{raw_dir}: роль набора {role!r}, а BUILD выполняется только на "
+                f"{raw_dir}: роль набора {dataset.role!r}, а BUILD выполняется только на "
                 f"{TRAIN_ROLE!r} (§27)"
             )
 
-        identifier = manifest.get("dataset_name")
-        if not identifier:
-            # §31 требует хранить идентификатор TRAIN-датасета. Артефакт без
-            # него не сказал бы, на чём посчитан.
-            raise BuildPhaseError(f"{manifest_path}: в манифесте нет dataset_name (§31)")
-
-        return cls(identifier=identifier, raw_dir=raw_dir, manifest=manifest)
+        return cls(
+            identifier=dataset.identifier, raw_dir=raw_dir, manifest=dataset.manifest
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -588,6 +624,188 @@ def freeze_build(result: BuildResult, artifacts_dir: Path) -> list[Path]:
             .encode("utf-8")
         )
     return written
+
+
+# --------------------------------------------------------------------------- #
+# ENCODE PHASE — §28, §37.2
+# --------------------------------------------------------------------------- #
+
+
+class EncodePhaseError(RuntimeError):
+    """Ошибка ENCODE — блокирующая. Выдавать частичный prepared-набор нельзя:
+    он выглядит как полный."""
+
+
+@dataclass(frozen=True)
+class FrozenArtifacts:
+    """Артефакты BUILD, прочитанные с диска (§28 п.1).
+
+    ENCODE обязан идти этим путём, а не пересчётом: у `Bucketizer` нет метода
+    `fit`, а `fit_bucket_edges` здесь просто не вызывается. Пересчитанные на
+    лету границы совпали бы с замороженными ровно до первого расхождения в
+    данных — то есть до момента, когда заметить это уже нельзя.
+    """
+
+    version: str
+    bucket_edges: BucketEdges
+    time_delta_edges: TimeDeltaEdges
+    versions: PreprocessingVersions
+    state_document: Mapping[str, Any]
+
+    @classmethod
+    def load(cls, artifacts_dir: Path, version: str) -> "FrozenArtifacts":
+        source = artifacts_dir / version
+        if not source.is_dir():
+            raise EncodePhaseError(
+                f"нет замороженных артефактов {source}: ENCODE не пересчитывает их (§28)"
+            )
+
+        def read(name: str) -> Any:
+            path = source / name
+            if not path.exists():
+                raise EncodePhaseError(f"в артефактах нет {name} (§31)")
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        return cls(
+            version=version,
+            bucket_edges=BucketEdges.from_state(read(BUCKET_EDGES_FILE)),
+            time_delta_edges=TimeDeltaEdges.from_state(read(TIME_DELTA_EDGES_FILE)),
+            versions=PreprocessingVersions.model_validate(read(VERSIONS_FILE)),
+            state_document=read(STATE_FILE),
+        )
+
+
+@dataclass(frozen=True)
+class EncodeResult:
+    """Готовый prepared-набор и всё, что о нём известно.
+
+    Записью на диск занимается 3.4: §28 разделяет «применить артефакты» (пп.
+    1–24) и «передать токенайзеру» (п. 25), и разделение полезное — прогон,
+    упавший на проверке контракта, не оставляет после себя половину файлов.
+    """
+
+    dataset: Dataset
+    artifacts: FrozenArtifacts
+    records: Sequence[ProjectedRecord]
+    contract: OutputContractReport
+    metrics: Mapping[str, Any]
+    quarantine: Mapping[str, Any]
+    metadata: Mapping[str, Any]
+    lineage: Mapping[str, Any]
+
+    def events(self) -> list[ProjectedRecord]:
+        return [item for item in self.records if item.event_type is not None]
+
+    def profiles(self) -> list[ProjectedRecord]:
+        return [item for item in self.records if item.schema_section == PROFILE_SECTION]
+
+
+def run_encode(
+    dataset: Dataset,
+    *,
+    artifacts: FrozenArtifacts,
+    config_dir: Path,
+    settings: PreprocessingSettings,
+    processing_time: datetime,
+    order: PartitionOrder = PartitionOrder.CANONICAL,
+) -> EncodeResult:
+    """§28, шаги 1–24 и 26.
+
+    Шаг 1 стоит первым не для порядка: пока не сошёлся
+    `preprocessing_state_sha256`, обрабатывать нечего — конфиги могли
+    измениться после BUILD, и границы бакетов оказались бы посчитаны по одной
+    схеме, а применялись бы к другой.
+    """
+    configs = freeze_configs(config_dir, settings)
+
+    # Шаг 14 §27 наоборот: domain приезжают из артефакта, а не считаются.
+    published = configs.schema.resolve_bucket_domains(
+        artifacts.bucket_edges.bucket_field_domains()
+    )
+    configs = _with_schema(configs, published)
+
+    # Шаг 1. Несовпадение блокирует обработку (§30).
+    state = build_state(
+        source_contracts=configs.registry,
+        identity_mapping=configs.identity,
+        event_mapping=configs.events,
+        category_mapping=configs.categories,
+        feature_schema=configs.schema,
+        timestamp_policy=configs.timestamps,
+        dedup_policy=configs.dedup,
+        sessionization=configs.sessionization,
+        fx_config=configs.fx,
+        profile_policy=configs.profile,
+        bucketization=configs.bucketization,
+        bucket_edges=artifacts.bucket_edges,
+        time_delta_edges=artifacts.time_delta_edges,
+        settings=settings,
+    )
+    expected = artifacts.versions.preprocessing_state_sha256
+    if not expected:
+        raise EncodePhaseError(
+            f"в артефактах {artifacts.version} нет preprocessing_state_sha256 (§30)"
+        )
+    verify_state_hash(state, expected)
+
+    monitor = DataQualityMonitor()
+    quarantine = Quarantine(
+        monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
+    )
+
+    # Шаги 3–15 и 18–20: та же цепочка, что у BUILD.
+    prepared = prepare_records(
+        configs, settings, dataset.raw_dir,
+        monitor=monitor, quarantine=quarantine, order=order,
+    )
+
+    # Шаги 16–17: замороженные границы, clipping и проверка против domain.
+    bucketizer = Bucketizer(artifacts.bucket_edges, configs.schema, monitor=monitor)
+    bucketed = list(bucketizer.transform(prepared))
+
+    # Шаги 21–22: порядок §13 и локальные календарные признаки §25.
+    # Шаг 23 выполняется тем, что `delta_prev` здесь не считается вовсе.
+    records = order_timeline(configs, settings, bucketed)
+
+    # Шаг 24: финальная проверка контракта §2.2.
+    contract = validate_output(
+        records,
+        schema=configs.schema,
+        bucket_field_domains=artifacts.bucket_edges.bucket_field_domains(),
+        cutoff=settings.cutoff_time,
+    )
+
+    # Шаг 26: метрики и lineage прогона.
+    versions = artifacts.versions
+    metadata = {
+        "cutoff_time": settings.cutoff_time.isoformat().replace("+00:00", "Z"),
+        "preprocessing_version": versions.preprocessing_version,
+        "preprocessing_state_sha256": versions.preprocessing_state_sha256,
+        "feature_schema_version": versions.feature_schema_version,
+        "bucket_field_domains_version": versions.bucket_field_domains_version,
+        "bucket_edges_version": versions.bucket_edges_version,
+        "calendar_timezone_policy_version": versions.calendar_timezone_policy_version,
+    }
+    lineage = {
+        "dataset_identifier": dataset.identifier,
+        "dataset_role": dataset.role,
+        "artifacts_version": artifacts.version,
+        "partition_order": str(order),
+        "processing_time": processing_time.isoformat().replace("+00:00", "Z"),
+        "bucketizer": bucketizer.report.summary(),
+        "output_contract": contract.summary(),
+    }
+
+    return EncodeResult(
+        dataset=dataset,
+        artifacts=artifacts,
+        records=records,
+        contract=contract,
+        metrics=monitor.report(),
+        quarantine=quarantine.summary(),
+        metadata=metadata,
+        lineage=lineage,
+    )
 
 
 def _with_schema(configs: FrozenConfigs, schema: FeatureSchema) -> FrozenConfigs:

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -163,6 +163,25 @@ class FieldEdges:
             bounds.append({"label": f"{LABEL_PREFIX}{index}", "low": low, "high": high})
         return tuple(bounds)
 
+    @classmethod
+    def from_state(cls, name: str, state: Mapping[str, Any]) -> "FieldEdges":
+        """Восстановить границы из замороженного артефакта (§28 п.1).
+
+        Разбирается только то, из чего границы состоят; `labels`, `domain` и
+        `intervals` в артефакте есть, но здесь не читаются — они выводятся из
+        границ, и прочитать их значило бы завести второй источник истины,
+        который однажды разойдётся с первым.
+        """
+        return cls(
+            name=name,
+            method=BucketMethod(state["method"]),
+            requested_count=int(state["requested_bucket_count"]),
+            edges=tuple(Decimal(item) for item in state["edges"]),
+            min_train=Decimal(state["min_train_edge"]),
+            max_train=Decimal(state["max_train_edge"]),
+            sample_size=int(state["sample_size"]),
+        )
+
     def as_state(self) -> dict[str, Any]:
         """JSON-совместимый вид для §29.1 и §30.
 
@@ -213,6 +232,23 @@ class BucketEdges:
             "bucket_edges_version": self.version,
             "fields": {name: self.fields[name].as_state() for name in sorted(self.fields)},
         }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> "BucketEdges":
+        """Загрузить замороженные границы (§28 п.1).
+
+        ENCODE обязан работать именно этим путём, а не пересчётом: §28 п.16
+        говорит «применить frozen edges», и пересчитанные на лету границы
+        совпали бы с замороженными ровно до первого расхождения в данных —
+        то есть тогда, когда это уже нельзя заметить.
+        """
+        return cls(
+            version=str(state["bucket_edges_version"]),
+            fields={
+                name: FieldEdges.from_state(name, values)
+                for name, values in sorted(state["fields"].items())
+            },
+        )
 
 
 # --------------------------------------------------------------------------- #
