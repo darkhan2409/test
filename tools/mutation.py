@@ -16,16 +16,21 @@
 печаталось и тогда, когда файл на диске менялся с LF на CRLF. Здесь всё
 чтение и запись идут байтами, и сверка после прогона тоже байтовая.
 
+Мутация правит **набор файлов**, а не один. Понадобилось это на изоляции
+прогона: дефект жил в загрузчике, а ловила его страховка в тестовом модуле, и
+единственный способ показать, что ловит именно она, — снять страховку и вернуть
+дефект одновременно. Двумя отдельными мутациями это не выражается: каждая по
+отдельности зелёная совсем по разным причинам.
+
 Пример:
 
-    from tools.mutation import Mutation, run_mutations
+    from tools.mutation import Edit, Mutation, run_mutations
 
     run_mutations(
         [
             Mutation(
                 name="сортировка убрана",
-                path=SRC / "timeline_builder.py",
-                replacements=(("sorted(records", "list(records"),),
+                edits=(Edit(SRC / "timeline_builder.py", (("sorted(records", "list(records"),)),),
                 caught_by="tests/test_timeline_builder.py::test_order_is_by_timestamp",
                 message="порядок событий",
             )
@@ -75,12 +80,19 @@ class Verdict(StrEnum):
 
 
 @dataclass(frozen=True)
+class Edit:
+    """Правка одного файла: пары «что заменить» → «на что»."""
+
+    path: Path
+    replacements: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class Mutation:
     """Одна мутация вместе с обещанием, как именно она обязана быть поймана."""
 
     name: str
-    path: Path
-    replacements: tuple[tuple[str, str], ...]
+    edits: tuple[Edit, ...]
 
     caught_by: str
     """Ожидаемое место падения: `<файл>::<тест>` или `COLLECTION`."""
@@ -89,12 +101,20 @@ class Mutation:
     """Подстрока, которая обязана быть в выводе. Это и есть защита от чужой
     ошибки: у своей проверки своё сообщение, и совпасть они не могут."""
 
-    equivalent: bool = False
-    """Мутация, которая обязана **выжить**: она ничего не меняет по существу.
-    Объявляется явно, чтобы «выжила» перестало быть неопределённостью."""
+    must_survive: bool = False
+    """Объявленный исход — SURVIVED, а не CAUGHT.
+
+    Раньше поле называлось `equivalent`, но так называется только одна из
+    причин выжить: мутант, который ничего не меняет по существу. Причина
+    бывает и другая, и куда неприятнее — вход, которого не хватает, молча
+    подставляет рабочая машина. Исход тот же, вывод противоположный, и имя
+    поля не должно решать это за читателя. Что именно объявлено — говорит
+    `reason`.
+    """
 
     reason: str = ""
-    """Зачем эквивалентный мутант нужен. Без объяснения он неотличим от дыры."""
+    """Почему выживание объявлено ожидаемым. Без объяснения оно неотличимо
+    от дыры."""
 
 
 @dataclass
@@ -107,7 +127,7 @@ class Result:
 
     @property
     def as_expected(self) -> bool:
-        if self.mutation.equivalent:
+        if self.mutation.must_survive:
             return self.verdict is Verdict.SURVIVED
         return self.verdict is Verdict.CAUGHT
 
@@ -129,24 +149,31 @@ def run_mutations(
     import time
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    originals = {item.path: item.path.read_bytes() for item in mutations}
+    originals = {
+        edit.path: edit.path.read_bytes() for item in mutations for edit in item.edits
+    }
     results: list[Result] = []
 
     for mutation in mutations:
-        original = originals[mutation.path]
-        text = original.decode("utf-8")
+        sources = {edit.path: originals[edit.path].decode("utf-8") for edit in mutation.edits}
 
-        missing = [old for old, _ in mutation.replacements if old not in text]
+        missing = [
+            old
+            for edit in mutation.edits
+            for old, _ in edit.replacements
+            if old not in sources[edit.path]
+        ]
         if missing:
             results.append(Result(mutation, Verdict.NOMATCH, detail=missing[0][:60]))
             continue
 
         started = time.monotonic()
         try:
-            mutated = text
-            for old, new in mutation.replacements:
-                mutated = mutated.replace(old, new, 1)
-            mutation.path.write_bytes(mutated.encode("utf-8"))
+            for edit in mutation.edits:
+                mutated = sources[edit.path]
+                for old, new in edit.replacements:
+                    mutated = mutated.replace(old, new, 1)
+                edit.path.write_bytes(mutated.encode("utf-8"))
             try:
                 completed = subprocess.run(
                     [sys.executable, "-m", "pytest", *tests, "-q", "--no-header"],
@@ -157,7 +184,8 @@ def run_mutations(
                 results.append(Result(mutation, Verdict.HUNG, time.monotonic() - started))
                 continue
         finally:
-            mutation.path.write_bytes(original)
+            for edit in mutation.edits:
+                edit.path.write_bytes(originals[edit.path])
 
         results.append(_judge(mutation, completed, time.monotonic() - started))
 
@@ -173,7 +201,13 @@ def _judge(mutation: Mutation, completed: subprocess.CompletedProcess, elapsed: 
     if completed.returncode == 0:
         return Result(mutation, Verdict.SURVIVED, elapsed)
 
-    failing = tuple(sorted(set(re.findall(r"^FAILED ([^\s]+)", output, re.MULTILINE))))
+    # `ERROR` наравне с `FAILED`: узел, умерший в своей фикстуре, pytest
+    # помечает как ERROR, а утверждается здесь одно — что объявленный узел не
+    # прошёл. Подменить проверку это не может: сообщение сверяется отдельно, и
+    # у чужой ошибки оно чужое.
+    failing = tuple(
+        sorted(set(re.findall(r"^(?:FAILED|ERROR) ([^\s]+)", output, re.MULTILINE)))
+    )
     collected = bool(re.search(r"error[s]? during collection", output))
 
     if mutation.message not in output:
@@ -223,12 +257,14 @@ def _report(results: Sequence[Result]) -> None:
             print(f"             {item.detail}")
         elif item.verdict is Verdict.CAUGHT and item.mutation.caught_by != COLLECTION:
             print(f"             поймана: {item.mutation.caught_by}")
+        if item.mutation.must_survive and item.mutation.reason:
+            print(f"             выживание объявлено: {item.mutation.reason}")
 
     unexpected = [item for item in results if not item.as_expected]
-    equivalents = [item for item in results if item.mutation.equivalent]
+    surviving = [item for item in results if item.mutation.must_survive]
     print(
         f"\nмутаций: {len(results)}, как объявлено: {len(results) - len(unexpected)}, "
-        f"эквивалентных: {len(equivalents)}"
+        f"объявленных выживающими: {len(surviving)}"
     )
     for item in unexpected:
         print(f"   НЕ ТО: {item.mutation.name} — {item.verdict}")

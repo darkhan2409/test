@@ -86,7 +86,7 @@
 |---|---|---|---|
 | 34 | BUILD только на TRAIN | Т | `test_build_phase.py::test_golden_input_is_refused`, `::test_dataset_without_role_is_refused`; плюс структурно — у `run_build` нет параметра для примера или батча |
 | 35 | ENCODE использует frozen artifacts | С∞ | У `Bucketizer` нет метода `fit`, `fit_bucket_edges` в ENCODE-пути не вызывается; границы приходят единственным путём — `FrozenArtifacts.load` |
-| 36 | Single/multi-worker совпадают байт-в-байт | Т | `test_conformance.py::test_build_does_not_depend_on_the_number_of_workers`, `::test_encode_does_not_depend_on_the_number_of_workers` (маркер `conformance`) |
+| 36 | Single/multi-worker совпадают байт-в-байт | Т | `test_conformance.py::test_build_does_not_depend_on_the_number_of_workers`, `::test_encode_does_not_depend_on_the_number_of_workers` (маркер `conformance`). Условия опыта создаёт барьер старта воркеров в `read_identified_parallel`: без него под нагрузкой все партиции доставались одному процессу в 9 прогонах из 10. У барьера есть предел (`WORKER_START_TIMEOUT`), и его превышение — тоже «не проведена»: след `start_timed_out`, стык воркер→родитель закрыт `test_parallel_evidence.py::test_start_timeout_travels_from_the_worker_into_the_evidence`. Несложившийся опыт повторяется трижды и, если не сложился, даёт **пропуск**, а не падение — расхождение выходов остаётся падением |
 | 37 | `closed_set_domains` и `bucket_field_domains` versioned | Т | `test_content_hash.py::test_output_metadata_carries_every_version_of_spec_30` |
 | 38 | `preprocessing_state_sha256` рассчитан | Т | `test_artifact_hasher.py::test_every_section_of_spec_30_is_hashed`, `::test_hash_does_not_depend_on_key_order` |
 | 39 | Hash проверяется при загрузке | Т | `test_artifact_hasher.py::test_mismatch_blocks_processing`; структурно — `verify_state_hash` ничего не возвращает, «продолжить с предупреждением» не выражается |
@@ -201,6 +201,16 @@
 `pytest -m conformance -p no:faulthandler`, около минуты. Пересборка идёт от
 `seed` во временном каталоге — `data/` и `artifacts/` разработчика прогон не
 трогает, а на свежем клоне их и нет.
+
+Абзац выше был написан раньше, чем стал правдой. Прогон на чистом клоне
+показал, что `data/` разработчика прогон всё-таки трогал: путь к таблице
+identity mapping вычислялся от текущего каталога и вёл в постоянный
+`data/raw`. Пересборка шла от `seed` **плюс** файл с рабочей машины, и
+заметить это можно было только на другой машине — мутационная проверка на
+машине, где файл есть, зелёная при любой мутации. Источник таблицы теперь
+выводится из данных (`_meta/` набора на BUILD, замороженное состояние §30 на
+ENCODE), а сам модуль прогоняется из пустого каталога (`isolated_cwd`), где
+подставить нечего. Разбор — восьмая форма вырожденности в `CLAUDE.md`.
 
 Вопрос «где взять артефакты» решён **пересборкой, а не хранением**:
 генератор и BUILD детерминированы, поэтому вся цепочка от `seed` до эталона

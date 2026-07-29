@@ -178,9 +178,19 @@ def test_configs_contribute_no_floats_to_the_state():
     from pathlib import Path
 
     from src.preprocessing.core.settings import PreprocessingSettings
+    from src.preprocessing.identity_resolver import DatasetIdentityTable
     from src.preprocessing.pipeline import freeze_configs
 
-    configs = freeze_configs(Path("config"), PreprocessingSettings())
+    # Пути от корня репозитория, а не от текущего каталога: иначе тест читал бы
+    # конфиги только при запуске `pytest` из корня. Таблица identity берётся у
+    # golden-набора — он единственный, который лежит в git; `data/raw` на
+    # чистом клоне нет вовсе, а сторож смотрит на конфиги, не на неё.
+    root = Path(__file__).resolve().parent.parent
+    configs = freeze_configs(
+        root / "config",
+        PreprocessingSettings(),
+        identity_table=DatasetIdentityTable(root / "data" / "golden_input" / "_meta"),
+    )
     sections = {
         "source_contracts": configs.registry.state(),
         "identity_mapping": configs.identity.state(),
