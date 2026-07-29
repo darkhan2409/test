@@ -1,0 +1,2 @@
+{"action": "push_received", "app_version": "5.10.2", "device_id": "DEV-000000-6fcb3f0f", "event_uid": "APP-L000000-PUSH-0013", "login_id": "L000000", "platform": "ANDROID", "template_id": "TPL_PAYMENT_REMINDER", "ts_local": "2024-10-03T19:30:47"}
+{"action": "push_received", "app_version": "5.12.0", "device_id": "DEV-000009-e8e1ac93", "event_uid": "APP-L000009-PUSH-0000", "login_id": "L000009", "platform": "HUAWEI", "template_id": "TPL_SECURITY_ALERT", "ts_local": "2024-10-27T17:15:37"}

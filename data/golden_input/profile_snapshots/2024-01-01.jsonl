@@ -1,0 +1,13 @@
+{"account_open_date": "2010-01-01", "age": 58, "cif": "CIF000000", "employment": "STUDENT", "products": ["CARD", "INSURANCE"], "region": "ASTANA", "salary": "473455", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2015-08-08", "age": 61, "cif": "CIF000001", "employment": "SELF_EMPLOYED", "products": ["BROKERAGE", "DEPOSIT"], "region": "ALMATY", "salary": "290363", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2019-10-06", "age": 38, "cif": "CIF000003", "employment": "EMPLOYED", "products": ["CARD", "INSURANCE", "SAVINGS"], "region": "ALMATY", "salary": "513644", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2023-04-18", "age": 21, "cif": "CIF000004", "employment": "EMPLOYED", "products": ["BROKERAGE", "CARD", "CHILD_CARD", "DEPOSIT", "INSURANCE", "LOAN", "METALS", "PENSION", "SAVINGS", "TRAVEL_CARD", "VIRTUAL_CARD"], "region": "ALMATY", "salary": "356355", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2022-01-25", "age": 29, "cif": "CIF000005", "employment": "EMPLOYED", "products": ["CARD", "DEPOSIT"], "region": "AKTOBE", "salary": "539665", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2020-03-30", "age": 37, "cif": "CIF000006", "employment": "EMPLOYED", "products": ["BROKERAGE", "LOAN"], "region": "ASTANA", "salary": "307793", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2016-06-17", "age": 22, "cif": "CIF000007", "employment": "RETIRED", "products": ["BROKERAGE", "CARD", "DEPOSIT"], "region": "ALMATY", "salary": "406468", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2017-03-18", "age": 20, "cif": "CIF000008", "employment": "EMPLOYED", "products": ["LOAN"], "region": "ASTANA", "salary": "325681", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2020-08-05", "age": 45, "cif": "CIF000009", "employment": "STUDENT", "products": ["LOAN"], "region": "ALMATY", "salary": "685792", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2016-05-28", "age": 52, "cif": "CIF000010", "employment": "EMPLOYED", "products": ["CARD", "INSURANCE", "SAVINGS"], "region": "ASTANA", "salary": "516587", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2017-05-26", "age": 24, "cif": "CIF000011", "employment": "EMPLOYED", "products": ["DEPOSIT", "INSURANCE", "LOAN", "SAVINGS"], "region": "ALMATY", "salary": "587190", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2022-07-06", "age": 37, "cif": "CIF000012", "employment": "EMPLOYED", "products": ["CARD", "INSURANCE", "LOAN"], "region": "ALMATY", "salary": "226722", "snapshot_date": "2024-01-01"}
+{"account_open_date": "2013-03-26", "age": 66, "cif": "CIF000013", "employment": "EMPLOYED", "products": ["BROKERAGE", "SAVINGS"], "region": "ALMATY", "salary": "800135", "snapshot_date": "2024-01-01"}

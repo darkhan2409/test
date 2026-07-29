@@ -1,0 +1,2 @@
+{"amount_minor": 1563661, "atm_id": "ATM-103", "cardholder_id": "CH000000", "currency_code": "398", "op": "WDR", "rec_id": "CRD-CH000000-00022", "schema_version": "1.2", "terminal_country": "KZ", "txn_time_ms": 1725967501000}
+{"amount_minor": 2135867, "atm_id": "ATM-858", "cardholder_id": "CH000007", "currency_code": "398", "op": "WDR", "rec_id": "CRD-CH000007-00021", "schema_version": "1.2", "terminal_country": "KZ", "txn_time_ms": 1726931213000}

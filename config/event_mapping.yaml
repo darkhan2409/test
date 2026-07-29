@@ -1,0 +1,67 @@
+# Event mapping — §10.
+#
+# `source event code → canonical event_type`. Утверждённый список типов задан
+# здесь же: §10 п.2 запрещает создавать новый `event_type` автоматически, а
+# запретить это можно только тогда, когда список закрыт и лежит в одном месте.
+#
+# Код, которого нет в маппинге, уходит в quarantine и поднимает
+# `unknown_event_type_rate` (§10 п.3). Дописать его «по ходу дела» нельзя —
+# это осознанная негибкость: молча появившийся тип событий означает, что
+# модель обучается на чём-то, чего никто не утверждал.
+
+event_mapping_version: "1.0.0"
+
+# Утверждённые типы событий. Всё, во что маппятся коды, обязано быть здесь.
+event_types:
+  - TRANSFER
+  - PAYMENT
+  - LOAN_PAYMENT
+  - CARD_PURCHASE
+  - CASH_WITHDRAWAL
+  - CARD_BLOCK
+  - APP_SESSION
+  - PUSH_NOTIFICATION
+
+sources:
+
+  core_payments:
+    code_field: op_code
+    codes:
+      TRF: TRANSFER
+      PMT: PAYMENT
+      LNP: LOAN_PAYMENT
+
+  card_processing:
+    code_field: op
+    codes:
+      PUR: CARD_PURCHASE
+      WDR: CASH_WITHDRAWAL
+      BLK: CARD_BLOCK
+
+  app_logs:
+    code_field: action
+    codes:
+      # Уведомление — самостоятельное событие: его получил клиент, а не
+      # совершил. В сессию оно не входит.
+      push_received: PUSH_NOTIFICATION
+      # Строки сессии сами по себе не события: §20 склеивает их в APP_SESSION.
+      # `null` — «утверждённый технический source message, который модельным
+      # событием не становится» (§10 п.5). Не то же самое, что неизвестный код:
+      # неизвестный уходит в карантин, а эти отдаются Sessionizer.
+      LOGIN: null
+      screen_open: null
+      button_click: null
+      form_submit: null
+
+  profile_snapshots:
+    # Снимок профиля событием не становится. §6 держит профиль отдельно от
+    # событий, и место снимка — в `prepared_profile` на T (§24), а не в
+    # timeline: иначе клиент «совершал» бы по событию каждый месяц.
+    code_field: null
+    default_event_type: null
+
+  fx_rates:
+    # Справочник курсов событием не становится вовсе (§10 п.5): он нужен
+    # FX-нормализации (§18), а не timeline.
+    code_field: null
+    default_event_type: null

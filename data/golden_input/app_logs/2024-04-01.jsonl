@@ -1,0 +1,2 @@
+{"action": "push_received", "app_version": "5.11.0", "device_id": "DEV-000007-65a4bfdc", "event_uid": "APP-L000007-PUSH-0002", "login_id": "L000007", "platform": "ANDROID", "template_id": "TPL_SECURITY_ALERT", "ts_local": "2024-04-06T11:50:25"}
+{"action": "push_received", "app_version": "6.0.1", "device_id": "DEV-000013-2b9739b4", "event_uid": "APP-L000013-PUSH-0000", "login_id": "L000013", "platform": "ANDROID", "template_id": "TPL_SECURITY_ALERT", "ts_local": "2024-04-12T11:21:47"}

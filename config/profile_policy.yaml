@@ -1,0 +1,34 @@
+# Профиль на T и life-long признаки — §6, §24.
+#
+# Life-long признаки считаются **на T** и обязаны быть агрегатами: счётчиками
+# и минимумами по множеству событий ≤ T. Порядок событий им не нужен — и это
+# не совпадение, а требование: TimelineBuilder (§13, §26) идёт позже по
+# цепочке, и признак, которому нужен порядок, здесь молча получил бы порядок
+# поступления записей. Правило закреплено интерфейсом аккумулятора: он видит
+# события по одному и последовательности не получает.
+
+profile_policy_version: "1.0.0"
+
+# Источник снимков профиля (§6).
+source: profile_snapshots
+snapshot_date_field: snapshot_date
+account_open_field: account_open_date
+products_field: products
+
+# Что считается транзакцией для `lifetime_transaction_count` (§24).
+# Список закрыт: «похоже на трату» — не критерий.
+transaction_event_types:
+  - TRANSFER
+  - PAYMENT
+  - LOAN_PAYMENT
+  - CARD_PURCHASE
+  - CASH_WITHDRAWAL
+
+# Что считается пополнением для `first_topup_age` (§24). Первое входящее
+# движение денег: тип события из списка и направление IN.
+topup:
+  event_types:
+    - TRANSFER
+    - PAYMENT
+  direction_field: direction
+  direction_value: IN

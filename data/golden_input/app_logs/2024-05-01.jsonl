@@ -1,0 +1,2 @@
+{"action": "push_received", "app_version": "5.12.0", "device_id": "DEV-000000-6fcb3f0f", "event_uid": "APP-L000000-PUSH-0003", "login_id": "L000000", "platform": "ANDROID", "template_id": "TPL_CASHBACK", "ts_local": "2024-05-04T09:41:49"}
+{"action": "push_received", "app_version": "5.10.2", "device_id": "DEV-000000-6fcb3f0f", "event_uid": "APP-L000000-PUSH-0018", "login_id": "L000000", "platform": "ANDROID", "template_id": "TPL_PAYMENT_REMINDER", "ts_local": "2024-05-13T12:18:12"}

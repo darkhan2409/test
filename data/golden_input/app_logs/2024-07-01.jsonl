@@ -1,0 +1,4 @@
+{"action": "push_received", "app_version": "5.12.3", "device_id": "DEV-000000-6fcb3f0f", "event_uid": "APP-L000000-PUSH-0005", "login_id": "L000000", "platform": "ANDROID", "template_id": "TPL_MARKETING_OFFER", "ts_local": "2024-07-24T15:15:16"}
+{"action": "push_received", "app_version": "5.11.0", "device_id": "DEV-000000-6fcb3f0f", "event_uid": "APP-L000000-PUSH-0011", "login_id": "L000000", "platform": "ANDROID", "template_id": "TPL_LOAN_DUE", "ts_local": "2024-07-27T14:04:01"}
+{"action": "push_received", "app_version": "5.11.0", "device_id": "DEV-000004-dd4c6970", "event_uid": "APP-L000004-PUSH-0003", "login_id": "L000004", "platform": "ANDROID", "template_id": "TPL_PAYMENT_REMINDER", "ts_local": "2024-07-27T14:59:14"}
+{"action": "push_received", "app_version": "6.0.1", "device_id": "DEV-000007-65a4bfdc", "event_uid": "APP-L000007-PUSH-0001", "login_id": "L000007", "platform": "ANDROID", "template_id": "TPL_LOAN_DUE", "ts_local": "2024-07-26T12:44:53"}

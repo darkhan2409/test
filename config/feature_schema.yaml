@@ -1,0 +1,504 @@
+# Feature Schema — §11, §11.2, плюс MISSING policy §15.
+#
+# Это общий контракт препроцессинга и токенайзера, поэтому имена полей здесь
+# **конечные** — те, что увидит модель. Значение под именем меняет форму по
+# дороге: в `amount_base_bucket` сначала лежит сырая строка `"15 000,50"`,
+# после §17 — число, после §18 — сумма в тенге, и только после §19 — `bucket_17`.
+# Переименовывать поле в середине цепочки было бы хуже: потерялась бы связь
+# между сырым значением и его конечным местом.
+#
+# `source_field` задан на уровне типа события, а не имени поля: одна и та же
+# `amount_base_bucket` приходит из `amount` в ядре платежей и из `amount_minor`
+# в карточном процессинге.
+#
+# `domain` бакет-полей здесь **не объявляется** — его публикует BUILD по
+# границам §19 (§11.1). Объявленный руками, он разошёлся бы с посчитанным при
+# первом же изменении числа бакетов.
+#
+# `event_type` в `fields` нет и быть не может (§11): он атрибут верхнего уровня.
+
+version: "1.0.0"
+
+# --------------------------------------------------------------------- #
+# MISSING policy — §15.2
+# --------------------------------------------------------------------- #
+missing_policy:
+  # Утверждённые source placeholders. Список закрыт: «похоже на заглушку»
+  # — не критерий, иначе реальное значение однажды исчезнет.
+  placeholders:
+    - "N/A"
+    - "n/a"
+    - "-"
+    - "--"
+    - "НЕТ ДАННЫХ"
+    - "нет данных"
+  # Пустая строка после trim — тоже пропуск (§15.2).
+  trim: true
+
+# --------------------------------------------------------------------- #
+# События
+# --------------------------------------------------------------------- #
+events:
+
+  TRANSFER:
+    event_type: TRANSFER
+    fields:
+      - name: amount_base_bucket
+        source_field: amount
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        fx_normalized: true
+        currency_field: currency
+        numeric:
+          numeric_type: decimal
+          signed: false
+          unit: KZT
+          scale: 1
+          locale: ru_KZ
+          min_value: 0
+          max_value: 100000000000
+      - name: currency
+        source_field: currency
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZT, USD, EUR, MISSING]
+        required: true
+        priority: 2
+      - name: direction
+        source_field: direction
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [IN, OUT, MISSING]
+        required: true
+        priority: 3
+
+  PAYMENT:
+    event_type: PAYMENT
+    fields:
+      - name: amount_base_bucket
+        source_field: amount
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        fx_normalized: true
+        currency_field: currency
+        numeric:
+          numeric_type: decimal
+          signed: false
+          unit: KZT
+          scale: 1
+          locale: ru_KZ
+          min_value: 0
+          max_value: 100000000000
+      - name: currency
+        source_field: currency
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZT, USD, EUR, MISSING]
+        required: true
+        priority: 2
+      - name: direction
+        source_field: direction
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [IN, OUT, MISSING]
+        required: true
+        priority: 3
+
+  LOAN_PAYMENT:
+    event_type: LOAN_PAYMENT
+    fields:
+      - name: amount_base_bucket
+        source_field: amount
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        fx_normalized: true
+        currency_field: currency
+        numeric:
+          numeric_type: decimal
+          signed: false
+          unit: KZT
+          scale: 1
+          locale: ru_KZ
+          min_value: 0
+          max_value: 100000000000
+      - name: currency
+        source_field: currency
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZT, USD, EUR, MISSING]
+        required: true
+        priority: 2
+      - name: direction
+        source_field: direction
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [IN, OUT, MISSING]
+        required: true
+        priority: 3
+
+  CARD_PURCHASE:
+    event_type: CARD_PURCHASE
+    fields:
+      - name: amount_base_bucket
+        source_field: amount_minor
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        fx_normalized: true
+        currency_field: currency
+        numeric:
+          numeric_type: integer
+          signed: false
+          unit: KZT
+          # Карточный процессинг присылает сумму в тиынах — сотых долях тенге.
+          scale: 0.01
+          locale: plain
+          min_value: 0
+          max_value: 100000000000
+      - name: currency
+        source_field: currency_code
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZT, USD, EUR, MISSING]
+        required: true
+        priority: 2
+      # Open-set: список категорий пополняется, и решение RARE/[UNK] по нему
+      # принимает токенайзер (§16.2), а не препроцессинг.
+      - name: merchant_category
+        source_field: merchant_category
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 3
+      - name: terminal_country
+        source_field: terminal_country
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZ, TR, AE, RU, DE, MISSING]
+        required: true
+        priority: 4
+      # §22: технический ID большой мощности. Объявлен явно, а не молча
+      # пропущен, — решение «не показывать модели» должно быть видно в
+      # контракте с токенайзером, а не выводиться из отсутствия строки.
+      - name: merchant_id
+        source_field: merchant_id
+        type: categorical
+        vocabulary_policy: excluded
+        model_input: false
+        high_cardinality: exclude
+        required: true
+        priority: 5
+
+  CASH_WITHDRAWAL:
+    event_type: CASH_WITHDRAWAL
+    fields:
+      - name: amount_base_bucket
+        source_field: amount_minor
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        fx_normalized: true
+        currency_field: currency
+        numeric:
+          numeric_type: integer
+          signed: false
+          unit: KZT
+          # Карточный процессинг присылает сумму в тиынах — сотых долях тенге.
+          scale: 0.01
+          locale: plain
+          min_value: 0
+          max_value: 100000000000
+      - name: currency
+        source_field: currency_code
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZT, USD, EUR, MISSING]
+        required: true
+        priority: 2
+      - name: terminal_country
+        source_field: terminal_country
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZ, TR, AE, RU, DE, MISSING]
+        required: true
+        priority: 3
+      - name: atm_id
+        source_field: atm_id
+        type: categorical
+        vocabulary_policy: excluded
+        model_input: false
+        high_cardinality: exclude
+        required: true
+        priority: 4
+
+  CARD_BLOCK:
+    event_type: CARD_BLOCK
+    fields:
+      - name: block_reason
+        source_field: block_reason
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [CLIENT_REQUEST, FRAUD_SUSPECTED, EXPIRED, MISSING]
+        required: true
+        priority: 1
+      - name: terminal_country
+        source_field: terminal_country
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [KZ, TR, AE, RU, DE, MISSING]
+        required: true
+        priority: 2
+
+  PUSH_NOTIFICATION:
+    event_type: PUSH_NOTIFICATION
+    fields:
+      # Template ID — пример open-set поля прямо из §16.2.
+      - name: template_id
+        source_field: template_id
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 1
+      - name: device_category
+        source_field: platform
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [ANDROID, IOS, HUAWEI, MISSING]
+        required: true
+        priority: 2
+      - name: app_version
+        source_field: app_version
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 3
+
+  APP_SESSION:
+    event_type: APP_SESSION
+    fields:
+      - name: duration_bucket
+        source_field: duration_seconds
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 1
+        numeric:
+          numeric_type: integer
+          signed: false
+          unit: seconds
+          locale: plain
+          min_value: 0
+          # 12 часов — тот же порог, что у аномалии сессии (§33.13).
+          max_value: 43200
+      - name: screens_count_bucket
+        source_field: screens_count
+        type: bucket
+        vocabulary_policy: bucket_closed_set
+        required: true
+        priority: 2
+        numeric:
+          numeric_type: integer
+          signed: false
+          unit: count
+          locale: plain
+          min_value: 0
+          max_value: 500
+      - name: first_screen
+        source_field: first_screen
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 3
+      - name: last_screen
+        source_field: last_screen
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 4
+      - name: screens
+        source_field: screens
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        multivalue: true
+        # Порядок значим: экраны — это путь клиента по приложению, и
+        # отсортированный список означал бы другой путь (§21 п.3).
+        order_significant: true
+        max_values_per_field: 8
+        required: true
+        priority: 5
+      - name: device_category
+        source_field: device_category
+        type: categorical
+        vocabulary_policy: closed_set
+        domain: [ANDROID, IOS, HUAWEI, MISSING]
+        required: true
+        priority: 6
+      - name: app_version
+        source_field: app_version
+        type: categorical
+        vocabulary_policy: frequency_pruned
+        required: true
+        priority: 7
+
+# --------------------------------------------------------------------- #
+# Профиль — §11.2
+# --------------------------------------------------------------------- #
+# Life-long признаки §24 помечены `computed: true`: их значение не читается
+# из снимка, а считается ProfileBuilder на T. `source_field` у них — имя, под
+# которым значение кладут, а не колонка источника; FeatureProjector такие
+# поля пропускает, а не ставит им MISSING.
+profile:
+  fields:
+    - name: region
+      source_field: region
+      type: categorical
+      vocabulary_policy: closed_set
+      domain: [ALMATY, ASTANA, SHYMKENT, KOSTANAY, AKTOBE, ATYRAU, ORAL, MISSING]
+      required: true
+      priority: 1
+    - name: employment
+      source_field: employment
+      type: categorical
+      vocabulary_policy: closed_set
+      domain: [EMPLOYED, SELF_EMPLOYED, STUDENT, RETIRED, UNEMPLOYED, MISSING]
+      required: true
+      priority: 2
+    - name: salary_bucket
+      source_field: salary
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 3
+      # Зарплата уже в тенге: FX-нормализация ей не нужна, но edges §18.3
+      # у неё свои — диапазон зарплат и диапазон транзакций несравнимы.
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: KZT
+        locale: plain
+        min_value: 0
+        max_value: 1000000000
+    - name: age_bucket
+      source_field: age
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 4
+      numeric:
+        numeric_type: integer
+        # §17.3: для возраста отрицательное значение невалидно.
+        signed: false
+        unit: years
+        locale: plain
+        min_value: 14
+        max_value: 120
+    - name: products
+      source_field: products
+      type: categorical
+      vocabulary_policy: frequency_pruned
+      multivalue: true
+      # Порядок незначим: набор продуктов — множество, а не
+      # последовательность. Сортируется, чтобы один и тот же набор всегда
+      # давал одну последовательность токенов (§21 п.2).
+      order_significant: false
+      max_values_per_field: 8
+      required: true
+      priority: 5
+    - name: account_age_bucket
+      source_field: account_age_bucket
+      # Дни от открытия счёта до T (§24).
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 6
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: days
+        locale: plain
+        min_value: 0
+        max_value: 40000
+    - name: first_seen_age_bucket
+      source_field: first_seen_age_bucket
+      # Дни от самого раннего события клиента до T.
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 7
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: days
+        locale: plain
+        min_value: 0
+        max_value: 40000
+    - name: first_topup_age_bucket
+      source_field: first_topup_age_bucket
+      # Дни от первого входящего движения денег до T.
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 8
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: days
+        locale: plain
+        min_value: 0
+        max_value: 40000
+    - name: lifetime_event_count_bucket
+      source_field: lifetime_event_count_bucket
+      # Все события клиента до T — счётчик, порядок не нужен.
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 9
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: count
+        locale: plain
+        min_value: 0
+        max_value: 1000000
+    - name: lifetime_transaction_count_bucket
+      source_field: lifetime_transaction_count_bucket
+      # Только денежные типы событий (список в profile_policy.yaml).
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 10
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: count
+        locale: plain
+        min_value: 0
+        max_value: 1000000
+    - name: lifetime_product_count_bucket
+      source_field: lifetime_product_count_bucket
+      # Продукты в выбранном снимке профиля.
+      computed: true
+      type: bucket
+      vocabulary_policy: bucket_closed_set
+      required: true
+      priority: 11
+      numeric:
+        numeric_type: integer
+        signed: false
+        unit: count
+        locale: plain
+        min_value: 0
+        max_value: 100

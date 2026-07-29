@@ -1,0 +1,277 @@
+# Source Contracts — §4.
+#
+# Один файл на весь набор, а не файл на источник: §30 знает ровно одну версию
+# `source_contract_version` для всех контрактов сразу. Раскладка по файлам
+# потребовала бы синхронизировать версию между ними вручную.
+#
+# YAML здесь — только форма записи. В `preprocessing_state_sha256` уходит не
+# текст этого файла, а канонический JSON провалидированной модели (§29.1):
+# отступы, порядок ключей и кавычки YAML на хэш влиять не должны.
+#
+# Про два разных `required`:
+#   - `required` в колонке контракта — «источник гарантирует наличие ключа».
+#     Отсутствие → нарушение контракта → quarantine.
+#   - `required` в Feature Schema (§11) — «признак нужен модели».
+#     Отсутствие → MISSING (§15).
+# Это разные вещи. Ключ, которого источник не гарантирует, обязан быть
+# `required: false` здесь, иначе краевой случай «нет ключа → MISSING»
+# не доживёт до §15.
+
+source_contract_version: "1.0.0"
+
+# Каталоги внутри data/raw/, которые источниками не являются. Всё остальное
+# без контракта — блокирующая ошибка: молча читать неизвестные данные нельзя
+# по той же причине, по которой §4 запрещает молча принимать новые поля.
+ignored_paths:
+  - _meta
+
+sources:
+
+  # ------------------------------------------------------------------ #
+  # Ядро платежей: система-источник истины по переводам и платежам.
+  # ------------------------------------------------------------------ #
+  core_payments:
+    kind: event
+    owner: "Core Banking / Payments"
+    format: jsonl
+    schema_version: "1.0"
+    source_priority: 10
+
+    primary_key: [source_record_id]
+    client_field: client_ref
+
+    event_time:
+      field: operation_time
+      kind: naive_local_pattern
+      pattern: "%d.%m.%Y %H:%M"
+    processing_time:
+      field: loaded_at
+      kind: iso_utc
+
+    # Время локальное и без зоны, поэтому зона нужна дважды: чтобы получить
+    # instant и чтобы посчитать календарные признаки (§12 пп. 2, 3).
+    timezone:
+      policy: from_field_mapping
+      field: branch_region
+      mapping: region_timezone
+
+    update_rules: versioned_by_field
+    delete_rules: none
+    correction_reversal:
+      supported: true
+      version_field: payload_version
+      reversal_flag_field: null
+
+    max_delay_hours: 72
+    late_arriving_policy: accept_and_monitor
+    data_retention_days: 3650
+    unknown_field_policy: quarantine
+
+    columns:
+      source_record_id: {type: string, required: true, nullable: false, pii: none}
+      client_ref: {type: string, required: true, nullable: false, pii: pseudonymous_id}
+      branch_region: {type: string, required: true, nullable: false, pii: quasi_identifier}
+      operation_time: {type: string, required: true, nullable: false, pii: none}
+      op_code: {type: string, required: true, nullable: false, pii: none}
+      # nullable: null приходит вместо суммы и обязан стать MISSING (§15.2),
+      # а не нарушением контракта.
+      amount: {type: string, required: true, nullable: true, pii: none}
+      currency: {type: string, required: true, nullable: false, pii: none}
+      # Источник не гарантирует направление: ключа может не быть вовсе.
+      direction: {type: string, required: false, nullable: true, pii: none}
+      counterparty_ref: {type: string, required: true, nullable: false, pii: none}
+      payload_version: {type: integer, required: true, nullable: false, pii: none}
+      loaded_at: {type: string, required: true, nullable: false, pii: none}
+
+  # ------------------------------------------------------------------ #
+  # Карточный процессинг: время абсолютное, суммы в минорных единицах.
+  # ------------------------------------------------------------------ #
+  card_processing:
+    kind: event
+    owner: "Cards / Processing"
+    format: jsonl
+    schema_version: "1.2"
+    schema_version_field: schema_version
+    source_priority: 20
+
+    primary_key: [rec_id]
+    client_field: cardholder_id
+
+    event_time:
+      field: txn_time_ms
+      kind: epoch_millis
+    processing_time: null
+
+    # Время уже абсолютное, зона нужна только для календарных признаков.
+    # Страна терминала для этого не годится: покупка в Турции остаётся
+    # поведением казахстанского клиента (§12.1).
+    timezone:
+      policy: client_profile_region
+      default: Asia/Almaty
+
+    update_rules: append_only
+    delete_rules: none
+    correction_reversal:
+      supported: false
+      version_field: null
+      reversal_flag_field: null
+
+    max_delay_hours: 24
+    late_arriving_policy: accept_and_monitor
+    data_retention_days: 3650
+    unknown_field_policy: quarantine
+
+    columns:
+      rec_id: {type: string, required: true, nullable: false, pii: none}
+      cardholder_id: {type: string, required: true, nullable: false, pii: pseudonymous_id}
+      txn_time_ms: {type: integer, required: true, nullable: false, pii: none}
+      op: {type: string, required: true, nullable: false, pii: none}
+      schema_version: {type: string, required: true, nullable: false, pii: none}
+      terminal_country: {type: string, required: true, nullable: false, pii: none}
+      # Блокировка карты не имеет суммы и мерчанта — ключей просто нет.
+      # Это «поле неприменимо» (§15.1), а не MISSING.
+      amount_minor: {type: integer, required: false, nullable: false, pii: none}
+      currency_code: {type: string, required: false, nullable: false, pii: none}
+      merchant_category: {type: string, required: false, nullable: false, pii: none}
+      mcc: {type: string, required: false, nullable: false, pii: none}
+      # Высококардинальный технический ID — §22 уберёт его перед моделью.
+      merchant_id: {type: string, required: false, nullable: false, pii: none}
+      atm_id: {type: string, required: false, nullable: false, pii: none}
+      block_reason: {type: string, required: false, nullable: false, pii: none}
+
+  # ------------------------------------------------------------------ #
+  # Логи приложения: строка на касание экрана, бизнес-события собирает §20.
+  # ------------------------------------------------------------------ #
+  app_logs:
+    kind: event
+    owner: "Digital Channels / Mobile"
+    format: jsonl
+    schema_version: "1.0"
+    source_priority: 30
+
+    primary_key: [event_uid]
+    client_field: login_id
+
+    event_time:
+      field: ts_local
+      kind: naive_local_pattern
+      pattern: "%Y-%m-%dT%H:%M:%S"
+    processing_time: null
+
+    # Часы устройства без зоны. Своего поля региона у источника нет, поэтому
+    # зона берётся из профиля клиента; если профиля нет — утверждённый
+    # source default (§12 п.7), и это поднимает calendar_timezone_fallback_rate.
+    timezone:
+      policy: client_profile_region
+      default: Asia/Almaty
+
+    update_rules: append_only
+    delete_rules: none
+    correction_reversal:
+      supported: false
+      version_field: null
+      reversal_flag_field: null
+
+    max_delay_hours: 6
+    late_arriving_policy: accept_and_monitor
+    data_retention_days: 730
+    unknown_field_policy: quarantine
+
+    columns:
+      event_uid: {type: string, required: true, nullable: false, pii: none}
+      login_id: {type: string, required: true, nullable: false, pii: pseudonymous_id}
+      device_id: {type: string, required: true, nullable: false, pii: pseudonymous_id}
+      ts_local: {type: string, required: true, nullable: false, pii: none}
+      action: {type: string, required: true, nullable: false, pii: none}
+      app_version: {type: string, required: true, nullable: false, pii: none}
+      platform: {type: string, required: true, nullable: false, pii: none}
+      # У входа в приложение экрана нет, у push-уведомления нет ни экрана,
+      # ни сессии — ключи отсутствуют по смыслу.
+      screen: {type: string, required: false, nullable: false, pii: none}
+      template_id: {type: string, required: false, nullable: false, pii: none}
+
+  # ------------------------------------------------------------------ #
+  # Помесячные снимки профиля. Не события: на T берётся последний снимок.
+  # ------------------------------------------------------------------ #
+  profile_snapshots:
+    kind: profile
+    owner: "CRM / Customer 360"
+    format: jsonl
+    schema_version: "1.0"
+    source_priority: 40
+
+    # Один клиент — много снимков, поэтому ключ составной.
+    primary_key: [cif, snapshot_date]
+    client_field: cif
+
+    # Для профиля `event_time` — момент снимка (§6 `profile_time_utc`).
+    event_time:
+      field: snapshot_date
+      kind: date_iso
+    processing_time: null
+
+    timezone:
+      policy: source_default
+      default: Asia/Almaty
+
+    update_rules: append_only
+    delete_rules: none
+    correction_reversal:
+      supported: false
+      version_field: null
+      reversal_flag_field: null
+
+    max_delay_hours: 168
+    late_arriving_policy: accept_and_monitor
+    data_retention_days: 3650
+    unknown_field_policy: quarantine
+
+    columns:
+      cif: {type: string, required: true, nullable: false, pii: pseudonymous_id}
+      snapshot_date: {type: string, required: true, nullable: false, pii: none}
+      region: {type: string, required: true, nullable: false, pii: quasi_identifier}
+      employment: {type: string, required: true, nullable: false, pii: quasi_identifier}
+      account_open_date: {type: string, required: true, nullable: false, pii: none}
+      salary: {type: string, required: true, nullable: false, pii: sensitive}
+      products: {type: string_list, required: true, nullable: false, pii: none}
+      age: {type: integer, required: true, nullable: false, pii: quasi_identifier}
+
+  # ------------------------------------------------------------------ #
+  # Курсы валют. Справочник, а не события: клиента у записи нет.
+  # ------------------------------------------------------------------ #
+  fx_rates:
+    kind: reference
+    owner: "Treasury / Market Data"
+    format: jsonl
+    schema_version: "1.0"
+    source_priority: 50
+
+    primary_key: [rate_date, currency]
+    client_field: null
+
+    # Для справочника `event_time` — дата, на которую курс действует.
+    event_time:
+      field: rate_date
+      kind: date_iso
+    processing_time: null
+
+    timezone:
+      policy: utc
+
+    update_rules: append_only
+    delete_rules: none
+    correction_reversal:
+      supported: false
+      version_field: null
+      reversal_flag_field: null
+
+    max_delay_hours: 24
+    late_arriving_policy: accept_and_monitor
+    data_retention_days: 3650
+    unknown_field_policy: quarantine
+
+    columns:
+      rate_date: {type: string, required: true, nullable: false, pii: none}
+      currency: {type: string, required: true, nullable: false, pii: none}
+      rate_to_kzt: {type: string, required: true, nullable: false, pii: none}
+      source: {type: string, required: true, nullable: false, pii: none}

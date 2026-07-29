@@ -1,0 +1,33 @@
+[project]
+name = "tokenaizer"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Darkhan Seilbekov",email = "Darkhan.Seilbekov@homecredit.kz"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic (>=2.13.4,<3.0.0)",
+    "tzdata (>=2026.3,<2027.0)",
+    "pydantic-settings (>=2.14.2,<3.0.0)",
+    "pyyaml (>=6.0,<7.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.pytest.ini_options]
+# Проект собирается не как пакет (package-mode = false), поэтому корень
+# добавляется в sys.path явно — иначе `import src...` из тестов не найдётся.
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,2 @@
+{"amount_minor": 798122, "cardholder_id": "CH000005", "currency_code": "398", "mcc": "5812", "merchant_category": "RESTAURANT", "merchant_id": "M-0409", "op": "PUR", "rec_id": "CRD-CH000005-00004", "schema_version": "1.2", "terminal_country": "KZ", "txn_time_ms": 1709975128000}
+{"amount_minor": 378028, "cardholder_id": "CH000005", "currency_code": "398", "mcc": "5411", "merchant_category": "GROCERY", "merchant_id": "M-2059", "op": "PUR", "rec_id": "CRD-CH000005-00007", "schema_version": "1.2", "terminal_country": "KZ", "txn_time_ms": 1710927338000}

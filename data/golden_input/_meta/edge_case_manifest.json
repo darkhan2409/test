@@ -1,0 +1,288 @@
+{
+  "boundary_after_t": [
+    {
+      "client_id": "C000010",
+      "note": "timestamp == T + 1 секунда, событие обязано быть отброшено",
+      "record_id": "CRDX-CH000010-after-T",
+      "source": "card_processing"
+    }
+  ],
+  "boundary_at_t": [
+    {
+      "client_id": "C000010",
+      "note": "timestamp == T, событие обязано войти в выборку",
+      "record_id": "CRDX-CH000010-at-T",
+      "source": "card_processing"
+    }
+  ],
+  "clip_high": [
+    {
+      "client_id": "C000006",
+      "note": "сумма выше TRAIN-диапазона",
+      "record_id": "CPX-000006-clip-high",
+      "source": "core_payments"
+    }
+  ],
+  "clip_low": [
+    {
+      "client_id": "C000006",
+      "note": "сумма ниже TRAIN-диапазона",
+      "record_id": "CPX-000006-clip-low",
+      "source": "core_payments"
+    }
+  ],
+  "dup_business": [
+    {
+      "client_id": "C000007",
+      "note": "тот же бизнес-факт, другой source_record_id",
+      "record_id": "CPX-000007-dup-business-a",
+      "source": "core_payments"
+    }
+  ],
+  "dup_conflicting": [
+    {
+      "client_id": "C000007",
+      "note": "тот же source_record_id, разная сумма и версия",
+      "record_id": "CPX-000007-dup-conflict",
+      "source": "core_payments"
+    }
+  ],
+  "dup_exact": [
+    {
+      "client_id": "C000007",
+      "note": "полный дубль строки",
+      "record_id": "CPX-000007-dup-exact",
+      "source": "core_payments"
+    }
+  ],
+  "future_timestamp": [
+    {
+      "client_id": "C000006",
+      "note": "время далеко в будущем относительно периода истории",
+      "record_id": "CPX-000006-future",
+      "source": "core_payments"
+    }
+  ],
+  "fx_fallback": [
+    {
+      "client_id": "C000009",
+      "note": "воскресенье: курса нет, нужен последний прошлый",
+      "record_id": "CPX-000009-fx-weekend",
+      "source": "core_payments"
+    }
+  ],
+  "fx_foreign": [
+    {
+      "client_id": "C000009",
+      "note": "сумма в USD, курс на дату есть",
+      "record_id": "CPX-000009-fx-usd",
+      "source": "core_payments"
+    }
+  ],
+  "fx_stale_gap": [
+    {
+      "client_id": "C000009",
+      "note": "курс не публиковался с 2025-07-07 — давность больше fx_max_staleness",
+      "record_id": "CPX-000009-fx-stale",
+      "source": "core_payments"
+    },
+    {
+      "client_id": "-",
+      "note": "курсы не публикуются 8 дней подряд с 2025-07-07",
+      "record_id": "-",
+      "source": "fx_rates"
+    }
+  ],
+  "historic_timezone": [
+    {
+      "client_id": "C000004",
+      "note": "событие до 2024-03-01: локальный час считается по историческим правилам зоны",
+      "record_id": "CPX-000004-historic-tz",
+      "source": "core_payments"
+    }
+  ],
+  "long_history": [
+    {
+      "client_id": "C000000",
+      "note": "счёт с 2010-01-01, 24 платежей",
+      "record_id": "-",
+      "source": "core_payments"
+    }
+  ],
+  "missing_empty": [
+    {
+      "client_id": "C000005",
+      "note": "currency = пустая строка",
+      "record_id": "CPX-000005-empty-currency",
+      "source": "core_payments"
+    }
+  ],
+  "missing_key": [
+    {
+      "client_id": "C000005",
+      "note": "ключ direction отсутствует",
+      "record_id": "CPX-000005-no-direction",
+      "source": "core_payments"
+    }
+  ],
+  "missing_null": [
+    {
+      "client_id": "C000005",
+      "note": "amount = null",
+      "record_id": "CPX-000005-null-amount",
+      "source": "core_payments"
+    }
+  ],
+  "missing_placeholder": [
+    {
+      "client_id": "C000005",
+      "note": "direction = 'N/A'",
+      "record_id": "CPX-000005-placeholder-direction",
+      "source": "core_payments"
+    }
+  ],
+  "multivalue_overflow": [
+    {
+      "client_id": "C000004",
+      "note": "11 продуктов — длиннее max_values_per_field",
+      "record_id": "CIF000004",
+      "source": "profile_snapshots"
+    }
+  ],
+  "naive_timestamp": [
+    {
+      "client_id": "-",
+      "note": "весь источник пишет локальное время без зоны и смещения",
+      "record_id": "-",
+      "source": "app_logs"
+    }
+  ],
+  "negative_age": [
+    {
+      "client_id": "C000005",
+      "note": "возраст отрицательный — для этого поля значение невалидно (§17.3)",
+      "record_id": "CIF000005@2025-06-01",
+      "source": "profile_snapshots"
+    }
+  ],
+  "no_events": [
+    {
+      "client_id": "C000003",
+      "note": "клиент без единого события во всех источниках",
+      "record_id": "-",
+      "source": "core_payments"
+    }
+  ],
+  "no_profile": [
+    {
+      "client_id": "C000002",
+      "note": "ни одного снимка профиля: профиль на T собирается из MISSING",
+      "record_id": "-",
+      "source": "profile_snapshots"
+    }
+  ],
+  "numeric_inf": [
+    {
+      "client_id": "C000005",
+      "note": "amount = '-Inf'",
+      "record_id": "CPX-000005-inf-amount",
+      "source": "core_payments"
+    }
+  ],
+  "numeric_nan": [
+    {
+      "client_id": "C000005",
+      "note": "amount = 'NaN'",
+      "record_id": "CPX-000005-nan-amount",
+      "source": "core_payments"
+    }
+  ],
+  "numeric_unparsable": [
+    {
+      "client_id": "C000005",
+      "note": "amount = 'abc'",
+      "record_id": "CPX-000005-bad-amount",
+      "source": "core_payments"
+    }
+  ],
+  "rare_value": [
+    {
+      "client_id": "C000011",
+      "note": "категория встречается всего 3 раза до T → реже min_count",
+      "record_id": "CRDX-CH000011-rare-0",
+      "source": "card_processing"
+    },
+    {
+      "client_id": "C000011",
+      "note": "категория встречается всего 3 раза до T → реже min_count",
+      "record_id": "CRDX-CH000011-rare-1",
+      "source": "card_processing"
+    },
+    {
+      "client_id": "C000011",
+      "note": "категория встречается всего 3 раза до T → реже min_count",
+      "record_id": "CRDX-CH000011-rare-2",
+      "source": "card_processing"
+    }
+  ],
+  "session_crossing_t": [
+    {
+      "client_id": "C000010",
+      "note": "сессия из 12 действий начинается за 25 мин до T и продолжается после",
+      "record_id": "APPX-L000010-cross-000",
+      "source": "app_logs"
+    }
+  ],
+  "single_event": [
+    {
+      "client_id": "C000001",
+      "note": "единственное событие клиента за всю историю",
+      "record_id": "CP-000001-00000",
+      "source": "core_payments"
+    }
+  ],
+  "tie_break_cross_source": [
+    {
+      "client_id": "C000008",
+      "note": "парная запись к core_payments с тем же timestamp — порядок решает source_priority",
+      "record_id": "CRDX-CH000008-tie-cross",
+      "source": "card_processing"
+    },
+    {
+      "client_id": "C000008",
+      "note": "парная запись к card_processing с тем же timestamp",
+      "record_id": "CPX-000008-tie-cross",
+      "source": "core_payments"
+    }
+  ],
+  "tie_break_same_source": [
+    {
+      "client_id": "C000008",
+      "note": "два события одного источника с одинаковым timestamp",
+      "record_id": "CPX-000008-tie-a",
+      "source": "core_payments"
+    }
+  ],
+  "unknown_event_code": [
+    {
+      "client_id": "C000005",
+      "note": "op_code = 'XYZ' вне маппинга",
+      "record_id": "CPX-000005-unknown-op",
+      "source": "core_payments"
+    }
+  ],
+  "unseen_value": [
+    {
+      "client_id": "C000011",
+      "note": "категория появляется только после T → в TRAIN её нет",
+      "record_id": "CRDX-CH000011-unseen-0",
+      "source": "card_processing"
+    },
+    {
+      "client_id": "C000011",
+      "note": "категория появляется только после T → в TRAIN её нет",
+      "record_id": "CRDX-CH000011-unseen-1",
+      "source": "card_processing"
+    }
+  ]
+}
