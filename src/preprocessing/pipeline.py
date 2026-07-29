@@ -64,6 +64,12 @@ from .feature_projection import (
 )
 from .field_policies import TEXT_POLICY_VERSION, FieldPolicies, check_field_policies
 from .output_contract import OutputContractReport, validate_output
+from .parallel import (
+    ParallelEvidence,
+    ParallelOutputMismatchError,
+    read_identified_parallel,
+    require_parallelism,
+)
 from .fx_normalizer import FxConfig, FXNormalizer, FxRateTable, load_fx_config
 from .identity_resolver import IdentityMapping, IdentityResolver, load_identity_mapping
 from .numeric_validator import NumericValidator
@@ -319,6 +325,7 @@ def prepare_records(
     monitor: DataQualityMonitor,
     quarantine: Quarantine,
     order: PartitionOrder = PartitionOrder.CANONICAL,
+    identified: Sequence[Any] | None = None,
 ) -> list[ProjectedRecord]:
     """Цепочка §37.2 от чтения до политик полей — общая часть BUILD и ENCODE.
 
@@ -329,20 +336,28 @@ def prepare_records(
 
     `order` задаёт порядок обхода партиций: по умолчанию канонический
     (§29 п.1), обратный нужен шагу 16, чтобы проверить независимость от него.
+
+    `identified` позволяет отдать уже прочитанные и разрешённые записи —
+    так входит multi-worker прогон (4.1): партиции читают отдельные процессы,
+    а дальше цепочка та же самая. Именно «та же самая» и есть смысл этого
+    шва: если бы параллельный путь шёл своей веткой кода, сравнение выходов
+    сравнивало бы две разные реализации.
     """
     cutoff = settings.cutoff_time
 
-    reader = SourceReader(configs.registry, monitor=monitor, quarantine=quarantine)
-    partitions = reader.discover_partitions(raw_dir)
-    if order is PartitionOrder.REVERSED:
-        partitions = list(reversed(partitions))
+    if identified is None:
+        reader = SourceReader(configs.registry, monitor=monitor, quarantine=quarantine)
+        partitions = reader.discover_partitions(raw_dir)
+        if order is PartitionOrder.REVERSED:
+            partitions = list(reversed(partitions))
 
-    resolver = IdentityResolver(
-        configs.registry, configs.identity, monitor=monitor, quarantine=quarantine
-    )
-    identified = list(
-        resolver.resolve(record for item in partitions for record in reader.read(item))
-    )
+        resolver = IdentityResolver(
+            configs.registry, configs.identity, monitor=monitor, quarantine=quarantine
+        )
+        identified = list(
+            resolver.resolve(record for item in partitions for record in reader.read(item))
+        )
+    identified = list(identified)
 
     index = ClientTimezoneIndex.build(
         identified, registry=configs.registry, policy=configs.timestamps, cutoff=cutoff
@@ -480,24 +495,43 @@ def run_build(
     settings: PreprocessingSettings,
     processing_time: datetime,
     order: PartitionOrder = PartitionOrder.CANONICAL,
+    identified: Sequence[Any] | None = None,
+    monitor: DataQualityMonitor | None = None,
+    quarantine: Quarantine | None = None,
 ) -> BuildResult:
     """§27, шаги 1–18. Заморозку на диск делает `freeze_build`.
 
     Единственный вход — целый TRAIN-набор. Ни примера, ни батча передать
     нечем, и это не забывчивость сигнатуры (§27, последний абзац).
     """
+    # Монитор и карантин можно передать снаружи, и это не удобство: в
+    # multi-worker прогоне чтение уже произошло в других процессах, и их
+    # счётчики с карантином лежат именно там. Создай BUILD свои — записи,
+    # отбракованные при чтении, исчезли бы из отчёта молча (§34), а
+    # `records_read` оказался бы нулём при непустом наборе.
+    #
+    # Согласованность аргументов проверяется до любой работы: несогласованный
+    # вызов не должен сначала прочитать конфиги, а потом упасть.
+    if (monitor is None) != (quarantine is None):
+        raise BuildPhaseError(
+            "монитор и карантин передаются только вместе: карантин обязан "
+            "поднимать метрики в тот же монитор (§34)"
+        )
+
     configs = freeze_configs(config_dir, settings)
 
-    monitor = DataQualityMonitor()
-    quarantine = Quarantine(
-        monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
-    )
+    if monitor is None:
+        monitor = DataQualityMonitor()
+        quarantine = Quarantine(
+            monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
+        )
+    assert quarantine is not None
 
     # Шаг 10. TRAIN — весь набор: разбиений нет, а от утечки будущего
     # защищает отсечка §14 внутри цепочки.
     prepared = prepare_records(
         configs, settings, dataset.raw_dir,
-        monitor=monitor, quarantine=quarantine, order=order,
+        monitor=monitor, quarantine=quarantine, order=order, identified=identified,
     )
 
     # Шаг 11. Детерминированная выборка.
@@ -577,6 +611,190 @@ def run_build(
         baselines=baselines,
         state=state,
         versions=versions,
+    )
+
+
+def run_build_parallel(
+    dataset: TrainDataset,
+    *,
+    config_dir: Path,
+    settings: PreprocessingSettings,
+    processing_time: datetime,
+    workers: int,
+) -> tuple[BuildResult, ParallelEvidence]:
+    """BUILD, где партиции читают отдельные процессы (§29 п.10, §27 шаг 16).
+
+    Возвращает результат **и следы прогона**. Второе не для отчётности:
+    без доказательства, что работа действительно разделилась, совпадение
+    выходов ничего не значит — см. `require_parallelism`.
+    """
+    configs = freeze_configs(config_dir, settings)
+
+    monitor = DataQualityMonitor()
+    quarantine = Quarantine(
+        monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
+    )
+
+    # Только для перечисления партиций: обход каталогов ничего не считает и
+    # ничего не отбраковывает, читать будут воркеры.
+    partitions = SourceReader(
+        configs.registry, monitor=monitor, quarantine=quarantine
+    ).discover_partitions(dataset.raw_dir)
+
+    identified, evidence = read_identified_parallel(
+        dataset.raw_dir,
+        config_dir=config_dir,
+        partitions=partitions,
+        workers=workers,
+        monitor=monitor,
+        quarantine=quarantine,
+        processing_time=processing_time,
+        pipeline_version=PIPELINE_VERSION,
+    )
+
+    result = run_build(
+        dataset,
+        config_dir=config_dir,
+        settings=settings,
+        processing_time=processing_time,
+        identified=identified,
+        monitor=monitor,
+        quarantine=quarantine,
+    )
+    return result, evidence
+
+
+def run_encode_parallel(
+    dataset: Dataset,
+    *,
+    artifacts: FrozenArtifacts,
+    config_dir: Path,
+    settings: PreprocessingSettings,
+    processing_time: datetime,
+    workers: int,
+) -> tuple[EncodeResult, ParallelEvidence]:
+    """ENCODE, где партиции читают отдельные процессы (§29 п.10).
+
+    Тот же шов, что у BUILD: параллелится чтение и разрешение `client_id`,
+    дальше цепочка сходится и идёт тем же кодом.
+    """
+    configs = freeze_configs(config_dir, settings)
+
+    monitor = DataQualityMonitor()
+    quarantine = Quarantine(
+        monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
+    )
+    partitions = SourceReader(
+        configs.registry, monitor=monitor, quarantine=quarantine
+    ).discover_partitions(dataset.raw_dir)
+
+    identified, evidence = read_identified_parallel(
+        dataset.raw_dir,
+        config_dir=config_dir,
+        partitions=partitions,
+        workers=workers,
+        monitor=monitor,
+        quarantine=quarantine,
+        processing_time=processing_time,
+        pipeline_version=PIPELINE_VERSION,
+    )
+
+    result = run_encode(
+        dataset,
+        artifacts=artifacts,
+        config_dir=config_dir,
+        settings=settings,
+        processing_time=processing_time,
+        identified=identified,
+        monitor=monitor,
+        quarantine=quarantine,
+    )
+    return result, evidence
+
+
+def compare_workers(
+    dataset: TrainDataset,
+    *,
+    config_dir: Path,
+    settings: PreprocessingSettings,
+    processing_time: datetime,
+    workers: int = 4,
+) -> ParallelEvidence:
+    """§29 п.10 для BUILD: один воркер против нескольких.
+
+    Порядок проверок важен. Сначала доказывается, что параллельность
+    состоялась, и только потом сравниваются выходы: иначе зелёное сравнение
+    прогона с самим собой выглядело бы пройденной проверкой.
+    """
+    single = run_build(
+        dataset, config_dir=config_dir, settings=settings, processing_time=processing_time
+    )
+    multi, evidence = run_build_parallel(
+        dataset,
+        config_dir=config_dir,
+        settings=settings,
+        processing_time=processing_time,
+        workers=workers,
+    )
+
+    require_parallelism(evidence)
+
+    if multi.fingerprint() != single.fingerprint():
+        raise ParallelOutputMismatchError(
+            "артефакты BUILD зависят от числа воркеров: "
+            f"{multi.state_sha256} против {single.state_sha256} (§29 п.10)"
+        )
+    return evidence
+
+
+def compare_workers_encode(
+    dataset: Dataset,
+    *,
+    artifacts: FrozenArtifacts,
+    config_dir: Path,
+    settings: PreprocessingSettings,
+    processing_time: datetime,
+    workers: int = 4,
+) -> ParallelEvidence:
+    """§29 п.10 для ENCODE: `prepared_*` не зависят от числа воркеров.
+
+    Сравниваются сами подготовленные записи, а не артефакты: артефакты у
+    ENCODE замороженные и совпадут в любом случае — сравнивать их значило бы
+    сравнивать вход с входом.
+    """
+    single = run_encode(
+        dataset, artifacts=artifacts, config_dir=config_dir, settings=settings,
+        processing_time=processing_time,
+    )
+    multi, evidence = run_encode_parallel(
+        dataset, artifacts=artifacts, config_dir=config_dir, settings=settings,
+        processing_time=processing_time, workers=workers,
+    )
+
+    require_parallelism(evidence)
+
+    if _encoded_fingerprint(multi) != _encoded_fingerprint(single):
+        raise ParallelOutputMismatchError(
+            "prepared-данные зависят от числа воркеров (§29 п.10)"
+        )
+    if multi.metrics != single.metrics or multi.quarantine != single.quarantine:
+        # §34: карантин и метрики — часть выхода прогона, и расходиться им
+        # нельзя ровно по той же причине, что и данным.
+        raise ParallelOutputMismatchError(
+            "метрики или карантин зависят от числа воркеров (§29 п.10, §34)"
+        )
+    return evidence
+
+
+def _encoded_fingerprint(result: EncodeResult) -> bytes:
+    """Канонический слепок prepared-выхода — то, что сравнивают воркеры."""
+    from .prepared_output import event_row, profile_row
+
+    return canonical_bytes(
+        {
+            "events": [event_row(item) for item in result.events()],
+            "profiles": [profile_row(item) for item in result.profiles()],
+        }
     )
 
 
@@ -748,6 +966,9 @@ def run_encode(
     settings: PreprocessingSettings,
     processing_time: datetime,
     order: PartitionOrder = PartitionOrder.CANONICAL,
+    identified: Sequence[Any] | None = None,
+    monitor: DataQualityMonitor | None = None,
+    quarantine: Quarantine | None = None,
 ) -> EncodeResult:
     """§28, шаги 1–24 и 26.
 
@@ -788,15 +1009,25 @@ def run_encode(
         )
     verify_state_hash(state, expected)
 
-    monitor = DataQualityMonitor()
-    quarantine = Quarantine(
-        monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
-    )
+    # Как и в BUILD: в multi-worker прогоне чтение уже произошло в других
+    # процессах, и счётчики с карантином лежат там. Свои создавать нельзя —
+    # брак, отбракованный при чтении, исчез бы из отчёта молча (§34).
+    if (monitor is None) != (quarantine is None):
+        raise EncodePhaseError(
+            "монитор и карантин передаются только вместе: карантин обязан "
+            "поднимать метрики в тот же монитор (§34)"
+        )
+    if monitor is None:
+        monitor = DataQualityMonitor()
+        quarantine = Quarantine(
+            monitor, processing_time=processing_time, pipeline_version=PIPELINE_VERSION
+        )
+    assert quarantine is not None
 
     # Шаги 3–15 и 18–20: та же цепочка, что у BUILD.
     prepared = prepare_records(
         configs, settings, dataset.raw_dir,
-        monitor=monitor, quarantine=quarantine, order=order,
+        monitor=monitor, quarantine=quarantine, order=order, identified=identified,
     )
 
     # Шаги 16–17: замороженные границы, clipping и проверка против domain.
