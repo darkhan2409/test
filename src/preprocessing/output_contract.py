@@ -39,7 +39,7 @@ BPE/subword может быть добавлена «в отдельной ве�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -48,6 +48,8 @@ from .schema.constants import MISSING, PROFILE_SECTION
 from .schema.feature_schema import FeatureSchema, FieldType, VocabularyPolicy
 
 COMPONENT = "output_contract"
+
+_ZERO_OFFSET = timedelta(0)
 
 
 class OutputContractError(RuntimeError):
@@ -102,6 +104,9 @@ def validate_output(
     for record in records:
         if record.schema_section == PROFILE_SECTION:
             report.profiles += 1
+            if record.timestamp_utc is not None:
+                # §32.1 пишет его как `profile_time_utc` — та же граница.
+                _check_utc(record, record.timestamp_utc, "profile_time_utc")
             _check_fields(record, specs, bucket_field_domains, report)
             continue
 
@@ -116,6 +121,25 @@ def validate_output(
     return report
 
 
+def _check_utc(record: ProjectedRecord, moment: datetime, field: str) -> None:
+    """Время на выходе обязано быть именно в UTC (§2.2, §12).
+
+    Проверяется на границе с токенайзером, а не только у нормализатора.
+    §12 приводит время к UTC, и это единственная гарантия — но §2.2 защищает
+    от изменений **выше по течению**, а не от собственного кода. Aware-время
+    в другой зоне прошло бы весь остальной контракт: сравнение с `T` корректно
+    для любой зоны, `calendar_timezone` заполнен, — и записалось бы как
+    `...+05:00` вместо `...Z`. Токенайзер сортирует такие строки как строки.
+    """
+    offset = moment.utcoffset() if moment.tzinfo is not None else None
+    if offset != _ZERO_OFFSET:
+        raise OutputContractError(
+            f"{record.raw_reference}: {field} = {moment.isoformat()} не в UTC "
+            f"(смещение {offset}) — §12 приводит время к UTC, а §2.2 требует "
+            "этого на входе токенайзера"
+        )
+
+
 def _check_event(
     record: ProjectedRecord,
     cutoff: datetime,
@@ -123,7 +147,15 @@ def _check_event(
     last_position: dict[str, int],
     last_key: dict[str, str],
 ) -> None:
-    if record.timestamp_utc is None or record.timestamp_utc > cutoff:
+    if record.timestamp_utc is None:
+        raise OutputContractError(
+            f"{record.raw_reference}: событие без timestamp_utc (§2.2, §14)"
+        )
+    # Зона проверяется до сравнения с `T`: наивное время сравнивать с aware
+    # нельзя, и без этой очерёдности вместо названной ошибки вылетел бы
+    # `TypeError` из глубины сравнения.
+    _check_utc(record, record.timestamp_utc, "timestamp_utc")
+    if record.timestamp_utc > cutoff:
         raise OutputContractError(
             f"{record.raw_reference}: событие вне окна наблюдения (§2.2, §14)"
         )

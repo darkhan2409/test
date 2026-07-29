@@ -31,3 +31,21 @@ package-mode = false
 # добавляется в sys.path явно — иначе `import src...` из тестов не найдётся.
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# Conformance-проверки §29.2 и §29 п.10 поднимают генератор, BUILD и четыре
+# процесса — около минуты, а не секунды. В обычном прогоне они выключены:
+# тест, из-за которого перестают гонять pytest, защищает хуже отсутствующего.
+# Запуск явной командой:
+#
+#     pytest -m conformance -p no:faulthandler
+#
+# `-p no:faulthandler` — из-за Windows: при `CreateProcess` спавна ОС бросает
+# first-chance access violation, faulthandler честно печатает её стек, и вывод
+# выглядит аварийным при зелёном результате. Само исключение обрабатывается
+# внутри `multiprocessing`, тесты проходят. На Linux флаг не нужен.
+#
+# В CI — по умолчанию (без `-m "not conformance"`), как требует §29.2 п.5.
+markers = [
+    "conformance: полная цепочка seed → артефакты → эталон; минуты, не секунды",
+]
+addopts = "-m 'not conformance'"

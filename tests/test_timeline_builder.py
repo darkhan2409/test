@@ -419,3 +419,28 @@ def test_profile_passes_through_untouched(registry):
 
     assert result[0] is profile
     assert builder.report.summary()["events"] == 1
+
+
+def test_ordering_key_still_carries_the_source_record_id(registry):
+    """Сторож на охраняемую зависимость: lineage §8 держится на составе ключа.
+
+    Из `prepared_events` вернуться к сырой записи можно только через
+    `ordering_key`: `source_meta` из выхода убран сознательно (§32.2, §2.2),
+    и `source_record_id` доезжает до токенайзера **внутри ключа** — как третья
+    часть tie-break §13, а не как lineage.
+
+    Совпадение это или замысел, но пока оно есть, от него зависит §8. §13
+    при этом прямо разрешает третьим ключом `event_id` — такая правка молча
+    оборвала бы единственный путь к сырой записи, не нарушив ни одного
+    правила. Тест превращает совпадение в зависимость, о которой сообщают.
+    """
+    builder = TimelineBuilder(registry, cutoff=CUTOFF)
+    record = event(minutes=0, record_id="CP-XYZ-001")
+
+    key = builder.ordering_key(record)
+
+    assert record.source_record_id in key, (
+        "ordering_key перестал нести source_record_id — от этого зависит "
+        "lineage §8: из prepared_events это единственный путь к сырой записи. "
+        "Меняешь третий ключ tie-break §13 — обеспечь lineage иначе"
+    )

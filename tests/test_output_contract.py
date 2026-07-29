@@ -202,6 +202,33 @@ def test_event_after_cutoff_is_blocked():
         validate([event(timestamp_utc=CUTOFF + timedelta(seconds=1))])
 
 
+def test_timestamp_in_another_timezone_is_blocked():
+    """§2.2: время на выходе обязано быть в UTC, а не «где-то aware».
+
+    Проверка стоит на границе с токенайзером, а не только у нормализатора:
+    §12 приводит время к UTC, но §2.2 защищает от изменений выше по течению.
+    Время в другой зоне прошло бы весь остальной контракт — сравнение с `T`
+    корректно для любой зоны, `calendar_timezone` заполнен, — и записалось бы
+    как `...+05:00` вместо `...Z`.
+
+    Момент выбран тот же самый: меняется только зона, инстант прежний.
+    Иначе тест не отличил бы проверку зоны от проверки границы `T`.
+    """
+    almaty = timezone(timedelta(hours=5))
+    shifted = MOMENT.astimezone(almaty)
+    assert shifted == MOMENT, "инстант изменился — тест проверял бы не зону"
+    assert shifted.isoformat() != MOMENT.isoformat(), "запись совпала — проверять нечего"
+
+    with pytest.raises(OutputContractError, match="не в UTC"):
+        validate([event(timestamp_utc=shifted)])
+
+
+def test_naive_timestamp_is_blocked():
+    """Наивное время — зона неизвестна, а не «подразумевается UTC»."""
+    with pytest.raises(OutputContractError, match="не в UTC"):
+        validate([event(timestamp_utc=MOMENT.replace(tzinfo=None))])
+
+
 def test_duplicate_event_id_is_blocked():
     """Дубль, прошедший мимо §9, виден только по повтору `event_id`."""
     first = event(position=0)
