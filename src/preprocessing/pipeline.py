@@ -664,6 +664,28 @@ def run_build_parallel(
     return result, evidence
 
 
+def output_metadata(
+    settings: PreprocessingSettings, versions: PreprocessingVersions
+) -> dict[str, Any]:
+    """Метаданные выхода — §32.3 и §35 F.40.
+
+    F.40 требует «все версии», а §32.3 показывает семь. Пример трактуется как
+    подмножество: комплект §30 кладётся целиком, и семь из §32.3 оказываются
+    в нём по построению. Обратное — держать в выходе только семь — оставило
+    бы токенайзер без версий маппингов, dedup, сессионизации и hash policy,
+    то есть без половины того, чем объясняется полученное значение.
+
+    Комплектность проверяется здесь, а не при чтении артефактов: строка
+    `UNSET`, доехавшая до метаданных, выглядит как версия и сравнивается как
+    версия, а обнаружится на стыке с токенайзером.
+    """
+    versions.require_complete()
+    return {
+        "cutoff_time": settings.cutoff_time.isoformat().replace("+00:00", "Z"),
+        **versions.as_metadata(),
+    }
+
+
 def run_encode_parallel(
     dataset: Dataset,
     *,
@@ -1047,16 +1069,7 @@ def run_encode(
     )
 
     # Шаг 26: метрики и lineage прогона.
-    versions = artifacts.versions
-    metadata = {
-        "cutoff_time": settings.cutoff_time.isoformat().replace("+00:00", "Z"),
-        "preprocessing_version": versions.preprocessing_version,
-        "preprocessing_state_sha256": versions.preprocessing_state_sha256,
-        "feature_schema_version": versions.feature_schema_version,
-        "bucket_field_domains_version": versions.bucket_field_domains_version,
-        "bucket_edges_version": versions.bucket_edges_version,
-        "calendar_timezone_policy_version": versions.calendar_timezone_policy_version,
-    }
+    metadata = output_metadata(settings, artifacts.versions)
     lineage = {
         "dataset_identifier": dataset.identifier,
         "dataset_role": dataset.role,

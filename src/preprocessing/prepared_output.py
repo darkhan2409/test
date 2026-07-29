@@ -231,12 +231,9 @@ def write_prepared(result: EncodedRun, out_dir: Path) -> TokenizerContract:
             "quarantine": result.quarantine,
             "output_contract": result.contract.summary(),
         },
-        METADATA_FILE: {
-            **result.metadata,
-            # §2 п.10 — отдельный пункт контракта, но не отдельный файл:
-            # это одно число, и жить ему рядом с версиями (§32.3).
-            "fx_max_staleness_days": settings.fx_max_staleness_days,
-        },
+        # §2 п.10 (`fx_max_staleness`) уже лежит в комплекте версий §30,
+        # который целиком входит в метаданные — отдельно дописывать нечего.
+        METADATA_FILE: dict(result.metadata),
         LINEAGE_FILE: dict(result.lineage),
     }
     for name, payload in sorted(files.items()):
