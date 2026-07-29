@@ -13,6 +13,7 @@ __pycache__/
 # который обязан приезжать вместе с кодом, иначе воспроизвести эталон нечем.
 /data/*
 !/data/golden_input/
+!/data/golden_expected/
 
 # Артефакты BUILD: версионируются по §30/§31 своим механизмом
 # (`artifacts/<preprocessing_version>/` + `preprocessing_state_sha256`),
