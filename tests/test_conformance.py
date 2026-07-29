@@ -27,10 +27,25 @@ first-chance access violation, faulthandler печатает её стек, и �
 Единственное, что берётся с диска, — `golden_input` и `golden_expected`:
 они в git, потому что §29.2 требует именно **замороженный** набор. Пересобери
 их тест сам, он сравнивал бы прогон с прогоном.
+
+**Почему прогон уходит в пустой каталог.** Всё написанное выше однажды было
+неправдой, и заметить это здесь было нельзя. Таблицу identity mapping код брал
+по относительному пути от текущего каталога — то есть из `data/raw` рабочей
+машины. На машине разработчика файл есть всегда, поэтому прогон был зелёным, а
+пересборка шла не от `seed`, а от `seed` плюс файл, которого на чистом клоне
+нет. Мутационная проверка такое не ловит по построению: любая мутация зелёная,
+пока недостающий вход молча подставляет рабочая машина.
+
+Поэтому `isolated_cwd` уводит весь модуль в пустой временный каталог. Там нет
+ни `data/`, ни `config/`, ни `artifacts/`, и подставить оттуда нечего:
+относительный путь, вычисленный от текущего каталога, падает на любой машине, а
+не только на чистом клоне. Всё, что модулю действительно нужно, адресуется от
+`ROOT` — то есть от репозитория, а не от места запуска.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,6 +54,7 @@ import pytest
 from src.generator.build_dataset import build as build_dataset
 from src.generator.config import GeneratorConfig
 from src.preprocessing.core.settings import PreprocessingSettings
+from src.preprocessing.parallel import ParallelismNotProvenError
 from src.preprocessing.golden import build_expected, compare_expected, load_expected
 from src.preprocessing.pipeline import (
     Dataset,
@@ -53,6 +69,24 @@ from src.preprocessing.pipeline import (
 
 pytestmark = pytest.mark.conformance
 
+
+def conducted(experiment):
+    """Провести опыт §29 п.10, различая два его исхода.
+
+    «Не пройдена» — выходы разошлись, это ошибка и красный прогон.
+    «Не проведена» — раскладку партиций решил планировщик, и опыта не
+    получилось; повторы внутри `run_until_conducted` уже исчерпаны.
+
+    Ронять набор одинаково в обоих случаях нельзя. Красное на условиях, а не
+    на предмете проверки, читается как «тест мигает», и через месяц его
+    отключат — и будут правы. Пропуск с полными следами не выглядит
+    пройденной проверкой и не выглядит поломкой; он ровно то, чем является.
+    """
+    try:
+        return experiment()
+    except ParallelismNotProvenError as problem:
+        pytest.skip(f"условия опыта не сложились: {problem}")
+
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN_INPUT = ROOT / "data" / "golden_input"
 GOLDEN_EXPECTED = ROOT / "data" / "golden_expected"
@@ -60,13 +94,35 @@ NOW = datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)
 WORKERS = 4
 
 
+@pytest.fixture(name="isolated_cwd", scope="module", autouse=True)
+def isolated_cwd_fixture(tmp_path_factory):
+    """Увести прогон в каталог, из которого нечего подставить.
+
+    Утверждаемое свойство ровно одно: **ни один вход этого модуля не
+    адресуется от текущего каталога**. Всё остальное — от `ROOT` или из
+    временного workspace. Соседние свойства фикстура не сторожит: она
+    промолчит, если вход возьмут по абсолютному пути мимо репозитория.
+    """
+    empty = tmp_path_factory.mktemp("isolated_cwd")
+    previous = Path.cwd()
+    os.chdir(empty)
+    try:
+        yield empty
+    finally:
+        os.chdir(previous)
+
+
 @pytest.fixture(name="rebuilt", scope="module")
-def rebuilt_fixture(tmp_path_factory) -> dict:
+def rebuilt_fixture(tmp_path_factory, isolated_cwd) -> dict:
     """Пересобрать TRAIN и артефакты с нуля во временном каталоге.
 
     Каталог временный намеренно: прогон не должен трогать `data/` и
     `artifacts/` разработчика. Данные и артефакты детерминированы, поэтому
     временная копия побайтно совпадает с постоянной.
+
+    `isolated_cwd` запрошен явно, хотя он и autouse: пересборка — первое, что
+    здесь читает файлы, и порядок «сначала уйти из репозитория, потом читать»
+    не должен держаться на порядке autouse-фикстур.
     """
     workspace = tmp_path_factory.mktemp("conformance")
     raw = workspace / "raw"
@@ -142,12 +198,14 @@ def test_build_does_not_depend_on_the_number_of_workers(rebuilt: dict):
     канонического), и только потом сравнивает. Вырожденный прогон объявляется
     непроведённой проверкой, а не пройденной.
     """
-    evidence = compare_workers(
-        rebuilt["train"],
-        config_dir=ROOT / "config",
-        settings=rebuilt["settings"],
-        processing_time=NOW,
-        workers=WORKERS,
+    evidence = conducted(
+        lambda: compare_workers(
+            rebuilt["train"],
+            config_dir=ROOT / "config",
+            settings=rebuilt["settings"],
+            processing_time=NOW,
+            workers=WORKERS,
+        )
     )
 
     assert len(evidence.by_pid) >= 2
@@ -162,13 +220,15 @@ def test_encode_does_not_depend_on_the_number_of_workers(rebuilt: dict):
     """
     artifacts = FrozenArtifacts.load(rebuilt["artifacts"], "0.1.0")
 
-    evidence = compare_workers_encode(
-        Dataset.load(GOLDEN_INPUT),
-        artifacts=artifacts,
-        config_dir=ROOT / "config",
-        settings=rebuilt["settings"],
-        processing_time=NOW,
-        workers=WORKERS,
+    evidence = conducted(
+        lambda: compare_workers_encode(
+            Dataset.load(GOLDEN_INPUT),
+            artifacts=artifacts,
+            config_dir=ROOT / "config",
+            settings=rebuilt["settings"],
+            processing_time=NOW,
+            workers=WORKERS,
+        )
     )
 
     assert len(evidence.by_pid) >= 2

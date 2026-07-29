@@ -68,10 +68,17 @@ from .parallel import (
     ParallelEvidence,
     ParallelOutputMismatchError,
     read_identified_parallel,
-    require_parallelism,
+    run_until_conducted,
 )
 from .fx_normalizer import FxConfig, FXNormalizer, FxRateTable, load_fx_config
-from .identity_resolver import IdentityMapping, IdentityResolver, load_identity_mapping
+from .identity_resolver import (
+    DatasetIdentityTable,
+    FrozenIdentityTable,
+    IdentityMapping,
+    IdentityResolver,
+    IdentityTable,
+    load_identity_mapping,
+)
 from .numeric_validator import NumericValidator
 from .profile_builder import ProfileBuilder, ProfilePolicy, load_profile_policy
 from .sampler import DeterministicSampler
@@ -97,7 +104,12 @@ from .timestamp_normalizer import (
     load_timestamp_policy,
 )
 
-DATASET_MANIFEST = "_meta/manifest.json"
+META_DIR = "_meta"
+"""Каталог набора, где лежит всё, что описывает сам набор: манифест и таблица
+identity mapping. Знать это имя должен набор, а не каждый читатель по
+отдельности, — поэтому наружу оно отдаётся через `Dataset.meta_dir`."""
+
+MANIFEST_FILE = "manifest.json"
 TRAIN_ROLE = "train"
 
 PIPELINE_VERSION = "0.1.0"
@@ -152,6 +164,13 @@ class Dataset:
     raw_dir: Path
     manifest: Mapping[str, Any]
 
+    @property
+    def meta_dir(self) -> Path:
+        """Каталог описаний набора. Единственный способ до него добраться:
+        путь выводится из самого набора, а не собирается вызывающим из
+        текущего каталога и строки в конфиге."""
+        return self.raw_dir / META_DIR
+
     @classmethod
     def load(cls, raw_dir: Path) -> "Dataset":
         """Прочитать манифест набора.
@@ -160,7 +179,7 @@ class Dataset:
         переименовать, скопировать и смонтировать куда угодно, а манифест
         едет вместе с записями.
         """
-        manifest_path = raw_dir / DATASET_MANIFEST
+        manifest_path = raw_dir / META_DIR / MANIFEST_FILE
         if not manifest_path.exists():
             raise BuildPhaseError(
                 f"нет манифеста набора {manifest_path}: неизвестно, что это за набор"
@@ -192,6 +211,10 @@ class TrainDataset:
     identifier: str
     raw_dir: Path
     manifest: Mapping[str, Any]
+
+    @property
+    def meta_dir(self) -> Path:
+        return self.raw_dir / META_DIR
 
     @classmethod
     def load(cls, raw_dir: Path) -> "TrainDataset":
@@ -269,10 +292,21 @@ class FrozenConfigs:
         )
 
 
-def freeze_configs(config_dir: Path, settings: PreprocessingSettings) -> FrozenConfigs:
-    """§27 шаги 1–9: загрузить и проверить всё, что BUILD замораживает."""
+def freeze_configs(
+    config_dir: Path, settings: PreprocessingSettings, *, identity_table: IdentityTable
+) -> FrozenConfigs:
+    """§27 шаги 1–9: загрузить и проверить всё, что BUILD замораживает.
+
+    Всё, кроме таблицы identity mapping, лежит в `config_dir` и приезжает из
+    git. Таблица — нет: она принадлежит набору (BUILD) или замороженному
+    состоянию (ENCODE), поэтому её источник передаётся отдельным обязательным
+    параметром. Умолчания у него нет, и это единственное, что удерживает
+    прогон от чтения `data/` рабочей машины.
+    """
     registry = load_source_contracts(config_dir / "source_contracts.yaml")
-    identity = load_identity_mapping(config_dir / "identity_mapping.yaml", registry)
+    identity = load_identity_mapping(
+        config_dir / "identity_mapping.yaml", registry, table=identity_table
+    )
     timestamps = load_timestamp_policy(config_dir / "timestamp_policy.yaml", registry)
     dedup = load_dedup_policy(config_dir / "dedup_policy.yaml", registry)
     events = load_event_mapping(config_dir / "event_mapping.yaml", registry)
@@ -518,7 +552,9 @@ def run_build(
             "поднимать метрики в тот же монитор (§34)"
         )
 
-    configs = freeze_configs(config_dir, settings)
+    configs = freeze_configs(
+        config_dir, settings, identity_table=DatasetIdentityTable(dataset.meta_dir)
+    )
 
     if monitor is None:
         monitor = DataQualityMonitor()
@@ -628,7 +664,8 @@ def run_build_parallel(
     без доказательства, что работа действительно разделилась, совпадение
     выходов ничего не значит — см. `require_parallelism`.
     """
-    configs = freeze_configs(config_dir, settings)
+    identity_table = DatasetIdentityTable(dataset.meta_dir)
+    configs = freeze_configs(config_dir, settings, identity_table=identity_table)
 
     monitor = DataQualityMonitor()
     quarantine = Quarantine(
@@ -644,6 +681,7 @@ def run_build_parallel(
     identified, evidence = read_identified_parallel(
         dataset.raw_dir,
         config_dir=config_dir,
+        identity_table=identity_table,
         partitions=partitions,
         workers=workers,
         monitor=monitor,
@@ -698,9 +736,12 @@ def run_encode_parallel(
     """ENCODE, где партиции читают отдельные процессы (§29 п.10).
 
     Тот же шов, что у BUILD: параллелится чтение и разрешение `client_id`,
-    дальше цепочка сходится и идёт тем же кодом.
+    дальше цепочка сходится и идёт тем же кодом. Включая источник таблицы
+    identity: воркеры разрешают `client_id` по той же замороженной таблице,
+    что и однопроцессный прогон, иначе сравнивать было бы нечего.
     """
-    configs = freeze_configs(config_dir, settings)
+    identity_table = artifacts.identity_table()
+    configs = freeze_configs(config_dir, settings, identity_table=identity_table)
 
     monitor = DataQualityMonitor()
     quarantine = Quarantine(
@@ -713,6 +754,7 @@ def run_encode_parallel(
     identified, evidence = read_identified_parallel(
         dataset.raw_dir,
         config_dir=config_dir,
+        identity_table=identity_table,
         partitions=partitions,
         workers=workers,
         monitor=monitor,
@@ -751,15 +793,15 @@ def compare_workers(
     single = run_build(
         dataset, config_dir=config_dir, settings=settings, processing_time=processing_time
     )
-    multi, evidence = run_build_parallel(
-        dataset,
-        config_dir=config_dir,
-        settings=settings,
-        processing_time=processing_time,
-        workers=workers,
+    multi, evidence = run_until_conducted(
+        lambda: run_build_parallel(
+            dataset,
+            config_dir=config_dir,
+            settings=settings,
+            processing_time=processing_time,
+            workers=workers,
+        )
     )
-
-    require_parallelism(evidence)
 
     if multi.fingerprint() != single.fingerprint():
         raise ParallelOutputMismatchError(
@@ -788,12 +830,12 @@ def compare_workers_encode(
         dataset, artifacts=artifacts, config_dir=config_dir, settings=settings,
         processing_time=processing_time,
     )
-    multi, evidence = run_encode_parallel(
-        dataset, artifacts=artifacts, config_dir=config_dir, settings=settings,
-        processing_time=processing_time, workers=workers,
+    multi, evidence = run_until_conducted(
+        lambda: run_encode_parallel(
+            dataset, artifacts=artifacts, config_dir=config_dir, settings=settings,
+            processing_time=processing_time, workers=workers,
+        )
     )
-
-    require_parallelism(evidence)
 
     if _encoded_fingerprint(multi) != _encoded_fingerprint(single):
         raise ParallelOutputMismatchError(
@@ -949,6 +991,21 @@ class FrozenArtifacts:
             state_document=read(STATE_FILE),
         )
 
+    def identity_table(self) -> FrozenIdentityTable:
+        """Таблица identity mapping, замороженная BUILD (§30).
+
+        ENCODE берёт её отсюда, а не с диска, по той же причине, по которой не
+        пересчитывает границы бакетов: набор на входе другой, и его собственная
+        таблица описывает других клиентов.
+        """
+        section = self.state_document.get("identity_mapping")
+        if not isinstance(section, Mapping):
+            raise EncodePhaseError(
+                f"в артефактах {self.version} нет раздела identity_mapping в "
+                f"{STATE_FILE} (§30)"
+            )
+        return FrozenIdentityTable(section)
+
 
 @dataclass(frozen=True)
 class EncodeResult:
@@ -999,7 +1056,9 @@ def run_encode(
     измениться после BUILD, и границы бакетов оказались бы посчитаны по одной
     схеме, а применялись бы к другой.
     """
-    configs = freeze_configs(config_dir, settings)
+    configs = freeze_configs(
+        config_dir, settings, identity_table=artifacts.identity_table()
+    )
 
     # Шаг 14 §27 наоборот: domain приезжают из артефакта, а не считаются.
     published = configs.schema.resolve_bucket_domains(

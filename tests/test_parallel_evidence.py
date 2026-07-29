@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,8 +28,10 @@ from src.preprocessing.core.quarantine import Quarantine
 from src.preprocessing.parallel import (
     ParallelEvidence,
     ParallelismNotProvenError,
+    _start_barrier,
     merge_in_canonical_order,
     require_parallelism,
+    run_until_conducted,
 )
 
 CANONICAL = ("a/1.jsonl", "a/2.jsonl", "b/1.jsonl", "b/2.jsonl")
@@ -45,6 +48,151 @@ def evidence(**overrides) -> ParallelEvidence:
     }
     values.update(overrides)
     return ParallelEvidence(**values)
+
+
+def test_degenerate_run_is_repeated_until_the_experiment_happens():
+    """Вырожденная раскладка — повод поставить опыт заново, а не вердикт.
+
+    Гонка сюда не заходит: попытки задаёт список, а не планировщик. Измерено,
+    что без барьера под нагрузкой опыт не ставился в 9 прогонах из 10 — но
+    проверять здесь надо не частоту, а то, что повтор вообще происходит и что
+    берётся результат состоявшейся попытки.
+    """
+    attempts = iter(
+        [
+            ("вырожденный-1", evidence(by_pid={2001: CANONICAL})),
+            ("вырожденный-2", evidence(completion_order=CANONICAL)),
+            ("состоявшийся", evidence()),
+        ]
+    )
+
+    result, proof = run_until_conducted(lambda: next(attempts))
+
+    assert result == "состоявшийся"
+    assert not proof.degeneracies()
+
+
+def test_attempts_are_finite_and_exhaustion_is_not_a_pass():
+    """Условия не сложились ни разу — это не «пройдено» и не молчание."""
+    calls = []
+
+    def always_degenerate():
+        calls.append(1)
+        return "неважно", evidence(by_pid={2001: CANONICAL})
+
+    with pytest.raises(ParallelismNotProvenError, match="не разделилась"):
+        run_until_conducted(always_degenerate, attempts=3)
+
+    assert len(calls) == 3, "повторов должно быть ровно столько, сколько объявлено"
+
+
+def test_start_timeout_is_a_check_not_conducted():
+    """Истёкший барьер старта — «не проведена», а не «пройдена».
+
+    Раскладка здесь намеренно **здоровая**: два процесса, порядок завершения
+    переставлен. Именно в этом смысл отдельного следа — пул, собравшийся не
+    полностью, может отработать прилично выглядящим образом, и по `by_pid`
+    этого не увидеть. Возьми проверка распределение вместо флага, мутация
+    «забыть про таймаут» прошла бы незамеченной.
+    """
+    assert not evidence().degeneracies(), "контроль: без таймаута раскладка здорова"
+
+    with pytest.raises(ParallelismNotProvenError, match="воркеры не собрались"):
+        require_parallelism(evidence(start_timed_out=True))
+
+
+def test_start_barrier_wait_is_bounded():
+    """Ожидание на барьере конечно: неполный пул не вешает прогон насмерть.
+
+    Барьер на двоих, ждёт один — условие, которое не выполнится никогда.
+    Проверяется, что `wait` возвращает управление по таймауту и что барьер
+    ломается для всех сразу, а не отсчитывает предел каждому по очереди.
+    """
+    import multiprocessing
+    import threading
+    import time
+
+    barrier = _start_barrier(multiprocessing.get_context("spawn"), 2, 2)
+
+    started = time.monotonic()
+    with pytest.raises(threading.BrokenBarrierError):
+        barrier.wait(timeout=0.2)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0, f"ожидание не ограничено таймаутом: {elapsed:.1f} c"
+    assert barrier.broken, "сломанный барьер обязан отпустить всех, а не только ждавшего"
+
+
+@pytest.mark.conformance
+def test_start_timeout_travels_from_the_worker_into_the_evidence(tmp_path):
+    """Истёкший барьер доезжает из воркера в следы родителя — на процессах.
+
+    Единственный тест здесь, поднимающий пул, и он про стык, а не про разбор
+    следов: флаг ставится в одном процессе, а читается в другом, и проверить
+    это глазами нельзя. Соседние тесты собирают `ParallelEvidence` руками и
+    такую потерю не заметили бы вовсе.
+
+    Барьер подменяется на заведомо непополнимый (участников на одного больше,
+    чем воркеров) — иначе неполный старт пула не воспроизвести. Предел берётся
+    маленький и **из родителя**: он уезжает в воркер через `initargs`, и это
+    та самая правка, без которой подмена не действовала бы.
+    """
+    from src.preprocessing import parallel
+    from src.preprocessing.core.settings import PreprocessingSettings  # noqa: F401
+    from src.preprocessing.identity_resolver import DatasetIdentityTable
+    from src.preprocessing.schema import load_source_contracts
+    from src.preprocessing.source_reader import SourceReader
+
+    root = Path(__file__).resolve().parent.parent
+    golden = root / "data" / "golden_input"
+
+    registry = load_source_contracts(root / "config" / "source_contracts.yaml")
+    partitions = SourceReader(
+        registry, monitor=DataQualityMonitor(), quarantine=_quarantine()
+    ).discover_partitions(golden)
+
+    original_barrier, original_timeout = parallel._start_barrier, parallel.WORKER_START_TIMEOUT
+    parallel._start_barrier = lambda context, workers, count: context.Barrier(workers + 1)
+    parallel.WORKER_START_TIMEOUT = 1.0
+    try:
+        started = time.monotonic()
+        _, evidence = parallel.read_identified_parallel(
+            golden,
+            config_dir=root / "config",
+            identity_table=DatasetIdentityTable(golden / "_meta"),
+            partitions=partitions,
+            workers=4,
+            monitor=DataQualityMonitor(),
+            quarantine=_quarantine(),
+            processing_time=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            pipeline_version="0.1.0",
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        parallel._start_barrier = original_barrier
+        parallel.WORKER_START_TIMEOUT = original_timeout
+
+    assert evidence.start_timed_out, "факт истёкшего барьера не доехал до следов"
+    assert any("не собрались" in p for p in evidence.degeneracies())
+    assert evidence.summary()["start_timed_out"] is True
+    # Предел общий на пул, а не на каждого воркера по очереди: сломанный
+    # барьер отпускает всех сразу. Четыре воркера по секунде дали бы четыре.
+    assert elapsed < 3.0, f"воркеры ждали по очереди, а не разом: {elapsed:.1f} c"
+
+
+def test_no_barrier_when_there_is_less_work_than_workers():
+    """Барьера нет, когда часть воркеров заведомо не получит задачи.
+
+    Иначе ожидание гарантированно упирается в таймаут: процесс, которому
+    нечего делать, до барьера не дойдёт. Вырожденность такой раскладки
+    называет `require_parallelism`, а не барьер.
+    """
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+
+    assert _start_barrier(context, 4, 3) is None
+    assert _start_barrier(context, 4, 4) is not None
 
 
 def test_healthy_run_is_accepted():
@@ -206,11 +354,16 @@ def test_single_worker_request_is_refused():
     Отказ, а не тихий последовательный прогон: «сравнили и совпало» на одном
     процессе выглядело бы пройденной проверкой §29 п.10.
     """
+    from src.preprocessing.identity_resolver import DatasetIdentityTable
     from src.preprocessing.parallel import read_identified_parallel
 
+    # Пути произвольные: отказ происходит до того, как что-либо будет прочитано.
     with pytest.raises(ParallelismNotProvenError, match="сравнивать multi-worker не с чем"):
         read_identified_parallel(
-            Path("data/raw"), config_dir=Path("config"), partitions=(), workers=1,
+            Path("data/raw"),
+            config_dir=Path("config"),
+            identity_table=DatasetIdentityTable(Path("data/raw/_meta")),
+            partitions=(), workers=1,
             monitor=DataQualityMonitor(), quarantine=_quarantine(),
             processing_time=datetime(2026, 2, 1, tzinfo=timezone.utc),
             pipeline_version="0.1.0",

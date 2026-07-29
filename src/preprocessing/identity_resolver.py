@@ -12,6 +12,14 @@
 Что компонент **не** делает: не создаёт `client_id` для неизвестной ссылки и
 не угадывает клиента по соседним полям. Неизвестная ссылка — карантин (§34),
 и это не потеря данных, а отказ выдумывать связь.
+
+**Откуда берётся сама таблица.** Ровно из двух мест, и текущий каталог не одно
+из них: на BUILD — из `_meta/` того набора, который обрабатывается, на ENCODE —
+из замороженного состояния §30. Раньше путь был относительным от `Path(".")`,
+и это была не мелочь: прогон во временном каталоге молча читал таблицу из
+`data/raw` рабочей машины и выглядел зелёным ровно до первого чистого клона.
+Поэтому источник — обязательный параметр без умолчания, а имя файла в конфиге
+не может содержать каталога: каталог знает набор, а не конфиг.
 """
 
 from __future__ import annotations
@@ -20,10 +28,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping, Protocol
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .core.debug_dump import DebugDump, Stage
 from .core.monitor import DataQualityMonitor
@@ -43,13 +51,34 @@ class IdentityMappingError(RuntimeError):
 
 
 class IdentityMappingConfig(BaseModel):
-    """Политика identity resolution (§7)."""
+    """Политика identity resolution (§7).
+
+    Здесь только политика: версия, имя файла таблицы и шаблон `client_id`.
+    Каталога у таблицы нет и быть не может — см. `_must_be_a_bare_file_name`.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     identity_mapping_version: str = Field(min_length=1)
-    table_path: Path
+    table_file: str = Field(min_length=1)
     client_id_pattern: str = Field(min_length=1)
+
+    @field_validator("table_file")
+    @classmethod
+    def _must_be_a_bare_file_name(cls, value: str) -> str:
+        """Проверка, а не отсутствие возможности: «имя файла без каталога» в
+        системе типов выразить нечем — `str` и `Path` одинаково принимают
+        `../../data/raw/_meta/identity_mapping.json`. А опасен здесь именно
+        каталог: он снова увёл бы чтение из обрабатываемого набора в
+        произвольное место файловой системы, и прогон стал бы зависеть от
+        того, что лежит на конкретной машине.
+        """
+        if value in {".", ".."} or set(value) & {"/", "\\"} or Path(value).is_absolute():
+            raise ValueError(
+                f"{value!r}: ожидалось имя файла без каталога — таблица лежит в `_meta/` "
+                "самого набора, и каталог задаёт набор, а не конфиг"
+            )
+        return value
 
 
 @dataclass(frozen=True)
@@ -83,10 +112,76 @@ def section_name(source: str, client_field: str) -> str:
     return f"{source}.{client_field}"
 
 
+class IdentityTable(Protocol):
+    """Источник таблицы соответствий.
+
+    Реализаций ровно две, и это не «пока две». Таблица либо приезжает вместе с
+    набором (BUILD), либо уже заморожена в состоянии §30 (ENCODE) — третьего
+    места, откуда её законно взять, регламент не описывает. Пока источник
+    выражается объектом, а не путём по умолчанию, «взять из текущего каталога»
+    просто нечем сказать.
+    """
+
+    def sections(self, config: IdentityMappingConfig) -> Any: ...
+
+
+@dataclass(frozen=True)
+class DatasetIdentityTable:
+    """Таблица из `_meta/` обрабатываемого набора — источник на BUILD.
+
+    Каталог передаёт набор (`Dataset.meta_dir`), а не конфиг: у golden и у
+    основного набора свои клиенты, и таблица обязана ехать вместе с записями,
+    которые на неё ссылаются.
+    """
+
+    meta_dir: Path
+
+    def sections(self, config: IdentityMappingConfig) -> Any:
+        table_path = self.meta_dir / config.table_file
+        if not table_path.exists():
+            raise IdentityMappingError(f"нет таблицы identity mapping: {table_path}")
+        return json.loads(
+            table_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicates
+        )
+
+
+@dataclass(frozen=True)
+class FrozenIdentityTable:
+    """Таблица из замороженного состояния BUILD — источник на ENCODE (§28 п.1).
+
+    С диска её брать нечего и незачем. Незачем — потому что §30 кладёт таблицу
+    в состояние целиком, и замороженная копия и есть та, которой посчитаны
+    артефакты. Нечего — потому что обрабатываемый набор здесь другой: у golden
+    свои 14 клиентов против 200 у TRAIN, и таблица оттуда дала бы состояние,
+    не совпадающее с замороженным.
+
+    Из конфига на ENCODE остаются версия и шаблон `client_id`: их расхождение
+    с замороженным — настоящая ошибка конфигурации, и §30 её уже не поймает,
+    потому что саму таблицу мы берём из артефакта.
+    """
+
+    state: Mapping[str, Any]
+
+    def sections(self, config: IdentityMappingConfig) -> Any:
+        frozen_version = self.state.get("identity_mapping_version")
+        if frozen_version != config.identity_mapping_version:
+            raise IdentityMappingError(
+                f"identity_mapping_version в конфиге ({config.identity_mapping_version}) "
+                f"не совпадает с замороженной в артефактах ({frozen_version}) — "
+                "таблица менялась после BUILD (§30)"
+            )
+        return self.state.get("sections")
+
+
 def load_identity_mapping(
-    config_path: Path, registry: SourceContractRegistry, *, base_dir: Path = Path(".")
+    config_path: Path, registry: SourceContractRegistry, *, table: IdentityTable
 ) -> IdentityMapping:
-    """Загрузить политику и таблицу, проверив их против Source Contracts."""
+    """Загрузить политику и таблицу, проверив их против Source Contracts.
+
+    `table` — обязательный параметр. Умолчания у него нет намеренно: любое
+    умолчание — это путь, вычисленный не от набора, а от того, где запущен
+    процесс, и такой прогон читает данные рабочей машины, не сообщая об этом.
+    """
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise IdentityMappingError(f"{config_path}: ожидался YAML-объект")
@@ -94,11 +189,7 @@ def load_identity_mapping(
 
     _check_client_fields_are_not_pii(registry)
 
-    table_path = base_dir / config.table_path
-    if not table_path.exists():
-        raise IdentityMappingError(f"нет таблицы identity mapping: {table_path}")
-
-    raw = json.loads(table_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicates)
+    raw = table.sections(config)
     sections = _check_sections(raw, registry, re.compile(config.client_id_pattern))
 
     return IdentityMapping(version=config.identity_mapping_version, sections=sections)
