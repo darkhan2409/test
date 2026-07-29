@@ -375,3 +375,25 @@ def test_primary_key_cannot_be_a_direct_identifier(tmp_path: Path):
 
     with pytest.raises(Exception, match="direct_identifier"):
         load_source_contracts(path)
+
+
+def test_nested_partition_layout_is_blocking(tmp_path: Path, registry):
+    """Подкаталог внутри источника — ошибка, а не «прочитан, записей ноль».
+
+    Обход партиций плоский по допущению A1. Это временная гарантия: раскладка
+    может измениться. Без этой проверки вложенные данные просто не нашлись бы —
+    `glob` вернул бы пусто, источник прочитался бы «успешно», и пропажа целого
+    источника выглядела бы в отчёте как честный ноль записей.
+
+    Пустой источник без подкаталогов законен: новый источник до первой
+    загрузки, и запрещать это нечем.
+    """
+    raw = build_raw(tmp_path / "raw", registry, {})
+    nested = raw / "core_payments" / "2026" / "01.jsonl"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b'{}\n')
+
+    reader, _, _ = make_reader(registry)
+
+    with pytest.raises(SourceContractError, match="обход партиций плоский"):
+        reader.discover_partitions(raw)

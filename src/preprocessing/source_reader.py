@@ -137,7 +137,23 @@ class SourceReader:
                     f"{source}: посторонние файлы в каталоге источника: " + ", ".join(unexpected)
                 )
 
-            for path in source_dir.glob(f"*{PARTITION_SUFFIX}"):
+            nested = sorted(item.name for item in source_dir.iterdir() if item.is_dir())
+            if nested:
+                # Обход не рекурсивный: раскладка плоская по допущению A1,
+                # `<source>/<дата>.jsonl`. Это временная гарантия — раскладка
+                # может измениться, — и без этой проверки вложенные данные
+                # просто не нашлись бы: `glob` вернул бы пусто, источник
+                # прочитался бы «успешно», а в отчёте оказался бы честный
+                # ноль записей. Пустой источник без подкаталогов при этом
+                # остаётся законным: новый источник до первой загрузки.
+                raise SourceContractError(
+                    f"{source}: в {source_dir} есть подкаталоги ("
+                    + ", ".join(nested)
+                    + f"), а обход партиций плоский — файлы {PARTITION_SUFFIX} внутри них "
+                    "не будут прочитаны. Смена раскладки требует осознанной правки обхода"
+                )
+
+            for path in sorted(source_dir.glob(f"*{PARTITION_SUFFIX}")):
                 partitions.append(
                     Partition(
                         source=source,

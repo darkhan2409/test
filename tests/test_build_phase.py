@@ -80,3 +80,22 @@ def test_dataset_without_identifier_is_refused(tmp_path: Path):
 
     with pytest.raises(BuildPhaseError, match="dataset_name"):
         TrainDataset.load(dataset(tmp_path, manifest))
+
+
+def test_dataset_roles_still_exclude_validation_and_test():
+    """Сторож на временную гарантию: BUILD не запускается на Validation/Test.
+
+    Сейчас это обеспечено тем, что таких ролей нет в `DatasetRole` — объявить
+    набор, которого не существует, нечем. Гарантия **временная**: разбиения
+    появятся вместе с боевыми данными (см. «Отложено» в `PLAN.md`), и в тот
+    же момент запрет §27 перестанет держаться сам собой.
+
+    Тест падает ровно тогда, когда роль добавили, и напоминает, что шаг 10
+    §27 («отобрать TRAIN без leakage») из вырожденного становится настоящим.
+    """
+    from src.generator.config import DatasetRole
+
+    assert {str(item) for item in DatasetRole} == {"train", "golden_input"}, (
+        "в DatasetRole появилась новая роль: если это разбиение, шаг 10 §27 "
+        "больше не вырожден — нужен настоящий отбор TRAIN, а не «весь набор»"
+    )

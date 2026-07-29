@@ -159,3 +159,24 @@ def test_real_config_has_no_pii_leak(setup):
     schema, registry = setup
 
     check_field_policies(schema, registry, default_max_values=MAX_VALUES)
+
+
+def test_high_cardinality_strategies_still_exclude_rare_assignment():
+    """Сторож на временную гарантию: `RARE` препроцессингом не назначается.
+
+    Сейчас это обеспечено составом `HighCardinalityPolicy`: в нём только
+    `exclude` и `pass_to_tokenizer`, а `keep_frequent` из §22 — та самая
+    стратегия, которая означала бы «оставить частые, остальное схлопнуть»,
+    то есть назначение `RARE` в препроцессинге. Объявить её нечем.
+
+    Гарантия **временная**: §22 эту стратегию описывает, и однажды её могут
+    реализовать. Тест падает в этот момент и напоминает, что §14.1
+    токенайзера считает `RARE` своей ответственностью, а хвостовой бакет
+    §2.2 обязан пережить `min_count`.
+    """
+    from src.preprocessing.schema.feature_schema import HighCardinalityPolicy
+
+    assert {str(item) for item in HighCardinalityPolicy} == {"exclude", "pass_to_tokenizer"}, (
+        "в HighCardinalityPolicy появилась стратегия: если она отсеивает редкие "
+        "значения, препроцессинг начал назначать RARE — §22 это запрещает"
+    )
