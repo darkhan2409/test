@@ -161,6 +161,69 @@ def test_hash_is_stable_between_runs():
 # --------------------------------------------------------------------------- #
 
 
+def test_configs_contribute_no_floats_to_the_state():
+    """В состоянии из конфигов нет ни одного float (§29.1 п.4).
+
+    Замер на собранном состоянии: float там сейчас нет вовсе — границы
+    бакетов и дельты хранятся строками десятичных дробей, всё остальное
+    целые и строки. Пока это так, выбор формата float (shortest round-trip
+    repr) на `preprocessing_state_sha256` не влияет, и межъязыкового риска
+    у хэша нет.
+
+    Свойство не вечное: достаточно одного дробного порога в YAML, и оно
+    исчезнет. Сторож смотрит на конфиги — там float появится раньше всего,
+    потому что YAML пишут руками. Границы им не покрыты и не должны быть:
+    их формат проверяют round-trip тесты 3.3.
+    """
+    from pathlib import Path
+
+    from src.preprocessing.core.settings import PreprocessingSettings
+    from src.preprocessing.pipeline import freeze_configs
+
+    configs = freeze_configs(Path("config"), PreprocessingSettings())
+    sections = {
+        "source_contracts": configs.registry.state(),
+        "identity_mapping": configs.identity.state(),
+        "event_mapping": configs.events.state(),
+        "category_mapping": configs.categories.state(),
+        "feature_schema": configs.schema.state(),
+        "numeric_rules": configs.schema.numeric_rules(),
+        "timestamp_policy": configs.timestamps.state(),
+        "dedup_config": configs.dedup.state(),
+        "sessionization_config": configs.sessionization.state(),
+        "fx_config": configs.fx.state(),
+        "profile_policy": configs.profile.state(),
+        "bucketization_config": configs.bucketization.state(),
+        "time_delta_config": configs.time_delta.state(),
+        "run_policy": PreprocessingSettings().policy_state(),
+    }
+
+    found = sorted(
+        f"{name}{path}" for name, value in sections.items() for path in _float_paths(value)
+    )
+
+    assert not found, (
+        "в состоянии появился float: формат чисел §29.1 п.4 снова начинает влиять на "
+        "preprocessing_state_sha256, и межъязыковая идентичность хэша перестаёт быть "
+        "бесплатной — " + ", ".join(found)
+    )
+
+
+def _float_paths(value: Any, path: str = "") -> list[str]:
+    """Пути до всех float. `bool` — подкласс `int`, а не `float`, и в поиск
+    не попадает; `int` не ищем сознательно: §29.1 п.7 печатает его без
+    плавающей точки, межъязыкового расхождения у него нет."""
+    if isinstance(value, float):
+        return [path]
+    if isinstance(value, dict):
+        return [item for key, nested in value.items() for item in _float_paths(nested, f"{path}.{key}")]
+    if isinstance(value, (list, tuple)):
+        return [
+            item for index, nested in enumerate(value) for item in _float_paths(nested, f"{path}[{index}]")
+        ]
+    return []
+
+
 def test_mismatch_blocks_processing():
     """Несовпадение — исключение, а не флаг и не предупреждение."""
     with pytest.raises(StateHashMismatchError, match="не совпал"):

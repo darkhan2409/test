@@ -686,6 +686,11 @@ class EncodeResult:
 
     dataset: Dataset
     artifacts: FrozenArtifacts
+    configs: FrozenConfigs
+    """Конфиги с уже подставленными domain бакет-полей. Нужны выдаче (§32):
+    половина пунктов контракта §2 — это они и есть."""
+
+    settings: PreprocessingSettings
     records: Sequence[ProjectedRecord]
     contract: OutputContractReport
     metrics: Mapping[str, Any]
@@ -799,6 +804,8 @@ def run_encode(
     return EncodeResult(
         dataset=dataset,
         artifacts=artifacts,
+        configs=configs,
+        settings=settings,
         records=records,
         contract=contract,
         metrics=monitor.report(),
