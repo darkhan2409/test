@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .artifact_hasher import PreprocessingState, build_state, verify_state_hash
+from .artifacts import collect_artifacts, write_artifacts
 from .bucketizer import (
     BucketEdges,
     BucketizationConfig,
@@ -427,6 +428,7 @@ class BuildResult:
 
     dataset: TrainDataset
     configs: FrozenConfigs
+    settings: PreprocessingSettings
     bucket_edges: BucketEdges
     time_delta_edges: TimeDeltaEdges
     baselines: Mapping[str, Any]
@@ -437,8 +439,17 @@ class BuildResult:
     def state_sha256(self) -> str:
         return self.state.sha256()
 
+    @property
+    def cutoff_time(self) -> datetime:
+        return self.settings.cutoff_time
+
     def artifacts(self) -> dict[str, Any]:
-        """Файлы артефактов: имя → содержимое. Пишутся канонически (§29.1)."""
+        """Файлы артефактов: имя → содержимое. Пишутся канонически (§29.1).
+
+        Здесь только то, что нужно самому пайплайну для загрузки на ENCODE.
+        Полный перечень §31 собирает `artifacts.collect_artifacts`: у него
+        другая задача — не «чем работать», а «по чему восстановить».
+        """
         return {
             STATE_FILE: self.state.document(),
             VERSIONS_FILE: self.versions.as_metadata(),
@@ -560,6 +571,7 @@ def run_build(
     return BuildResult(
         dataset=dataset,
         configs=resolved,
+        settings=settings,
         bucket_edges=bucket_edges,
         time_delta_edges=time_delta_edges,
         baselines=baselines,
@@ -602,8 +614,23 @@ def check_order_independence(
         )
 
 
-def freeze_build(result: BuildResult, artifacts_dir: Path) -> list[Path]:
+def freeze_build(
+    result: BuildResult,
+    artifacts_dir: Path,
+    *,
+    build_timestamp: datetime,
+    root: Path = Path("."),
+) -> list[Path]:
     """§27 шаг 19: записать артефакты и зарегистрировать версию.
+
+    Пишутся две группы. Рабочая — то, чем ENCODE загружается (состояние,
+    версии, границы). Полный перечень §31 — то, по чему прогон
+    восстанавливают; его собирает `artifacts.collect_artifacts`.
+
+    `build_timestamp` передаётся снаружи, а не берётся из `datetime.now()`
+    внутри: время не должно появляться там, где считается состояние. В хэш
+    оно не входит (см. `artifacts`), и единственный способ это удержать —
+    не иметь к нему доступа в BUILD.
 
     Рядом с каноническим JSON кладётся читаемая копия (допущение A5 плана).
     В хэш она не входит и входить не может: хэш считается по состоянию, а не
@@ -623,6 +650,14 @@ def freeze_build(result: BuildResult, artifacts_dir: Path) -> list[Path]:
             (json.dumps(json.loads(canonical_text(payload)), ensure_ascii=False, indent=2) + "\n")
             .encode("utf-8")
         )
+
+    required = collect_artifacts(
+        result,
+        root=root,
+        build_timestamp=build_timestamp,
+        golden_input_dir=result.settings.golden_input_dir,
+    )
+    written.extend(write_artifacts(required, target))
     return written
 
 
