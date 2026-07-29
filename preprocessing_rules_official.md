@@ -173,7 +173,7 @@ Raw record не передаётся токенайзеру напрямую.
 ```json
 {
   "client_id": "123",
-  "event_id": "evt_...",
+  "event_id": "38de5d6eeb31a02dcbb8c1581088a66a",
   "event_type": "TRANSFER",
   "timestamp_utc": "2026-01-15T09:30:00Z",
   "calendar_timezone": "Asia/Almaty",
@@ -183,6 +183,8 @@ Raw record не передаётся токенайзеру напрямую.
   }
 }
 ```
+
+> `event_id` в примерах — 32 hex-символа по §29.1 п.11; префиксы вида `evt_` не используются. Значение взято из `golden_expected` (`golden_vectors_version` 1.1.0) и иллюстрирует **форму**, а не является константой: при перегенерации набора оно изменится.
 
 `event_type` не дублируется в `fields`.
 
@@ -416,6 +418,8 @@ canonical event
 Разные source record ID, но одинаковый бизнес-факт.
 
 Используется versioned fingerprint.
+
+Отпечаток считается **внутри одного источника**. На шаге дедупликации суммы ещё сырые: одна и та же покупка приходит строкой `"33 000,00"` из ядра платежей и целым `3300000` тиын из карточного процессинга, а numeric-валидация и FX-нормализация (§17, §18) стоят ниже по цепочке (§37.2). Межисточниковый бизнес-дубль в этом порядке неразличим в принципе, и его обнаружение требует второго прохода дедупликации после §18 — в базовую версию он не входит.
 
 Пример для транзакции:
 
@@ -934,9 +938,9 @@ Tokenizer получает bucket label как категорию и не при
 
 Если используется sample:
 
-- deterministic reservoir sampling;
-- seed от stable record hash и global seed (алгоритм хэша и пре-образ — §29.1);
-- результат не зависит от worker count.
+- выборка обязана быть детерминированной и **не зависеть от нарезки потока между workers и от порядка завершения задач** (§29 п.5). Конкретный алгоритм не предписывается: классический reservoir (алгоритм R) этому требованию удовлетворить не может — он идёт по потоку с одним общим генератором, поэтому результат зависит и от порядка записей, и от того, как поток порезан между процессами;
+- seed каждой записи считается только из неё самой и global seed (алгоритм хэша и пре-образ — §29.1 п.12), чтобы выборку можно было собрать слиянием частей;
+- выбранный алгоритм фиксируется артефактом `sampling_algorithm` (§31).
 
 ## 20. SESSIONIZATION APP-ЛОГОВ
 
@@ -1087,6 +1091,8 @@ raw lifetime value
 
 Все признаки рассчитываются на T.
 
+Бакетизация life-long признаков выполняется тем же единственным шагом §19, что и для полей события. Отсюда порядок цепочки: профиль на T и life-long признаки считаются **до** бакетизации (§27, §28, §37.2). Обратный порядок оставил бы эти поля без границ: на BUILD их значений ещё нет, к ENCODE границы уже заморожены.
+
 Запрещено использовать:
 
 - полную будущую lifetime history;
@@ -1180,7 +1186,7 @@ BUILD PHASE выполняется только на TRAIN.
 7. Зафиксировать category mappings.
 8. Зафиксировать FX source и `fx_max_staleness`.
 9. Зафиксировать numeric validation rules.
-10. Отобрать TRAIN без leakage.
+10. Отобрать TRAIN без leakage; рассчитать profile on T и life-long признаки — их значения входят в выборку шага 11 и в границы шага 12.
 11. Выполнить deterministic sampling.
 12. Рассчитать numeric bucket_edges.
 13. Рассчитать time_delta_edges.
@@ -1210,11 +1216,11 @@ BUILD PHASE не выполняется на отдельном примере, 
 13. Нормализовать категории.
 14. Провалидировать числа.
 15. Применить FX normalization.
-16. Применить frozen numeric bucket_edges и clipping.
-17. Проверить bucket value против bucket_field_domain.
+16. Выбрать profile snapshot на T.
+17. Рассчитать life-long features.
 18. Ограничить multivalue fields.
-19. Выбрать profile snapshot на T.
-20. Рассчитать life-long features.
+19. Применить frozen numeric bucket_edges и clipping.
+20. Проверить bucket value против bucket_field_domain.
 21. Построить timeline.
 22. Рассчитать local hour/day.
 23. Не фиксировать final delta_prev до model window.
@@ -1387,7 +1393,7 @@ Hash проверяется при загрузке.
 [
   {
     "client_id": "123",
-    "event_id": "evt_1",
+    "event_id": "38de5d6eeb31a02dcbb8c1581088a66a",
     "event_type": "TRANSFER",
     "timestamp_utc": "2026-01-15T09:30:00Z",
     "calendar_timezone": "Asia/Almaty",
@@ -1404,6 +1410,8 @@ Hash проверяется при загрузке.
   }
 ]
 ```
+
+> `event_id` в примерах — 32 hex-символа по §29.1 п.11; префиксы вида `evt_` не используются. Значение взято из `golden_expected` (`golden_vectors_version` 1.1.0) и иллюстрирует **форму**, а не является константой: при перегенерации набора оно изменится.
 
 `event_type` находится только top-level.
 
@@ -1721,10 +1729,10 @@ raw records
 → categories
 → numeric validation
 → FX normalization
-→ frozen bucketization + clipping
-→ bucket domain validation
 → profile on T
 → life-long features
+→ frozen bucketization + clipping
+→ bucket domain validation
 → timeline
 → local hour/day
 → prepared profile/events
