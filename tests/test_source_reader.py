@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.preprocessing.core.monitor import DataQualityMonitor, Metric, Total
 from src.preprocessing.core.quarantine import Quarantine, ReasonCode
@@ -343,3 +344,34 @@ def test_missing_and_invalid_values_survive_the_reader(tmp_path, registry):
     assert kept[0].payload["amount"] is None
     assert "direction" not in kept[0].payload
     assert quarantine.summary()["total"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# PII в идентификаторе записи — §4, §23, §13
+# --------------------------------------------------------------------------- #
+
+
+def test_primary_key_cannot_be_a_direct_identifier(tmp_path: Path):
+    """Прямой идентификатор не может быть первичным ключом источника.
+
+    `source_record_id` склеивается из `primary_key` и уезжает к токенайзеру
+    внутри `ordering_key` (§13, §5 п.7) — значением поля он не становится и
+    токеном не будет, но в выходном файле лежит открытым текстом. §7 п.4
+    уже запрещает PII в поле клиента; здесь та же дыра со стороны ключа
+    записи, и на синтетике она безобидна только потому, что генератор
+    нумерует записи сам. Боевой источник волен нумеровать чем угодно.
+
+    Проверка стоит на модели контракта: объявить такой источник нельзя, а не
+    «нужно не забыть проверить».
+    """
+    document = yaml.safe_load(CONTRACTS.read_text(encoding="utf-8"))
+    contract = document["sources"]["core_payments"]
+    key = contract["primary_key"][0]
+    assert contract["columns"][key]["pii"] == "none", "ключ уже помечен — тест ничего не проверит"
+    contract["columns"][key]["pii"] = "direct_identifier"
+
+    path = tmp_path / "contracts.yaml"
+    path.write_bytes(yaml.safe_dump(document, allow_unicode=True).encode("utf-8"))
+
+    with pytest.raises(Exception, match="direct_identifier"):
+        load_source_contracts(path)

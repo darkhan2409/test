@@ -267,6 +267,19 @@ class SourceContract(BaseModel):
                     f"primary_key: {column!r} обязан быть string — "
                     "приведение числа к строке зависит от реализации"
                 )
+            if spec.pii is PiiClass.DIRECT_IDENTIFIER:
+                # `source_record_id` склеивается из primary_key и уезжает к
+                # токенайзеру внутри `ordering_key` (§13, §5 п.7). Значением
+                # поля он не становится и токеном не будет, но в выходном
+                # файле он лежит открытым текстом — а §23 и §7 п.4 запрещают
+                # прямому идентификатору доходить до модели в любом виде.
+                # Источник волен нумеровать записи чем угодно, включая ИИН;
+                # решать это должен контракт, а не удача.
+                raise ValueError(
+                    f"primary_key: {column!r} классифицирован как direct_identifier — "
+                    "он войдёт в source_record_id и уедет в ordering_key (§13), "
+                    "то есть прямой идентификатор окажется в выходных данных (§23)"
+                )
 
         if len(set(self.primary_key)) != len(self.primary_key):
             raise ValueError("primary_key содержит повторяющиеся колонки")
