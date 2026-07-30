@@ -48,6 +48,7 @@ from .bucketizer import (
 )
 from .category_normalizer import CategoryMapping, CategoryNormalizer, load_category_mapping
 from .core.canonical import canonical_bytes, canonical_text
+from .core.debug_dump import DebugDump, default_client_filter
 from .core.monitor import DataQualityMonitor
 from .core.quarantine import Quarantine
 from .core.settings import PreprocessingSettings
@@ -360,6 +361,7 @@ def prepare_records(
     quarantine: Quarantine,
     order: PartitionOrder = PartitionOrder.CANONICAL,
     identified: Sequence[Any] | None = None,
+    debug: DebugDump | None = None,
 ) -> list[ProjectedRecord]:
     """Цепочка §37.2 от чтения до политик полей — общая часть BUILD и ENCODE.
 
@@ -376,17 +378,27 @@ def prepare_records(
     а дальше цепочка та же самая. Именно «та же самая» и есть смысл этого
     шва: если бы параллельный путь шёл своей веткой кода, сравнение выходов
     сравнивало бы две разные реализации.
+
+    `debug` — трассировка §1.6. Выключенный дамп ничего не делает, поэтому
+    передавать его можно всегда; параллельный путь передаёт `identified`, и
+    тогда первые два компонента отработали в воркерах — их дампов здесь нет.
     """
     cutoff = settings.cutoff_time
 
     if identified is None:
-        reader = SourceReader(configs.registry, monitor=monitor, quarantine=quarantine)
+        reader = SourceReader(
+            configs.registry, monitor=monitor, quarantine=quarantine, debug=debug
+        )
         partitions = reader.discover_partitions(raw_dir)
         if order is PartitionOrder.REVERSED:
             partitions = list(reversed(partitions))
 
         resolver = IdentityResolver(
-            configs.registry, configs.identity, monitor=monitor, quarantine=quarantine
+            configs.registry,
+            configs.identity,
+            monitor=monitor,
+            quarantine=quarantine,
+            debug=debug,
         )
         identified = list(
             resolver.resolve(record for item in partitions for record in reader.read(item))
@@ -403,29 +415,31 @@ def prepare_records(
         monitor=monitor,
         quarantine=quarantine,
         client_zones=index,
+        debug=debug,
     )
-    cut = CutoffFilter(cutoff=cutoff, monitor=monitor)
+    cut = CutoffFilter(cutoff=cutoff, monitor=monitor, debug=debug)
     dedup = Deduplicator(
-        configs.registry, configs.dedup, monitor=monitor, quarantine=quarantine
+        configs.registry, configs.dedup, monitor=monitor, quarantine=quarantine, debug=debug
     )
     timed = list(dedup.deduplicate(cut.apply(normalizer.normalize(identified))))
 
     mapper = EventMapper(
-        configs.registry, configs.events, monitor=monitor, quarantine=quarantine
+        configs.registry, configs.events, monitor=monitor, quarantine=quarantine, debug=debug
     )
     sessions = Sessionizer(
         configs.sessionization,
         session_gap=settings.session_gap,
         max_values_per_field=settings.max_values_per_field,
         monitor=monitor,
+        debug=debug,
     )
     projector = FeatureProjector(
-        configs.schema, configs.missing, configs.registry, monitor=monitor
+        configs.schema, configs.missing, configs.registry, monitor=monitor, debug=debug
     )
     categories = CategoryNormalizer(
-        configs.schema, configs.categories, monitor=monitor, quarantine=quarantine
+        configs.schema, configs.categories, monitor=monitor, quarantine=quarantine, debug=debug
     )
-    numeric = NumericValidator(configs.schema, monitor=monitor)
+    numeric = NumericValidator(configs.schema, monitor=monitor, debug=debug)
     rates = FxRateTable.build(timed, configs.fx)
     fx = FXNormalizer(
         configs.schema,
@@ -433,10 +447,16 @@ def prepare_records(
         rates,
         max_staleness=settings.fx_max_staleness,
         monitor=monitor,
+        debug=debug,
     )
-    profiles = ProfileBuilder(configs.schema, configs.profile, cutoff=cutoff, monitor=monitor)
+    profiles = ProfileBuilder(
+        configs.schema, configs.profile, cutoff=cutoff, monitor=monitor, debug=debug
+    )
     policies = FieldPolicies(
-        configs.schema, default_max_values=settings.max_values_per_field, monitor=monitor
+        configs.schema,
+        default_max_values=settings.max_values_per_field,
+        monitor=monitor,
+        debug=debug,
     )
 
     return list(
@@ -455,15 +475,21 @@ def prepare_records(
 
 
 def order_timeline(
-    configs: FrozenConfigs, settings: PreprocessingSettings, records: Sequence[ProjectedRecord]
+    configs: FrozenConfigs,
+    settings: PreprocessingSettings,
+    records: Sequence[ProjectedRecord],
+    *,
+    debug: DebugDump | None = None,
 ) -> list[ProjectedRecord]:
     """§13 плюс §25: порядок событий и локальные календарные признаки.
 
     BUILD нужен порядок, а не бакеты: дельта между соседними событиями
     считается по времени, и границы §19 на неё не влияют.
     """
-    timeline = TimelineBuilder(configs.registry, cutoff=settings.cutoff_time).build(records)
-    return list(TimeFeatureBuilder().build(timeline))
+    timeline = TimelineBuilder(
+        configs.registry, cutoff=settings.cutoff_time, debug=debug
+    ).build(records)
+    return list(TimeFeatureBuilder(debug=debug).build(timeline))
 
 
 # --------------------------------------------------------------------------- #
@@ -1105,19 +1131,32 @@ def run_encode(
         )
     assert quarantine is not None
 
+    # Трассировка §1.6: выключенный дамп — no-op, поэтому создаётся всегда.
+    # Список клиентов объявляет сам набор (`_meta/`), а не вызывающий код:
+    # состав ролевых и «чистых» клиентов знает генератор.
+    debug = DebugDump.from_settings(
+        settings,
+        default_client_filter(dataset.meta_dir) if settings.debug else None,
+    )
+
     # Шаги 3–15 и 18–20: та же цепочка, что у BUILD.
     prepared = prepare_records(
         configs, settings, dataset.raw_dir,
         monitor=monitor, quarantine=quarantine, order=order, identified=identified,
+        debug=debug,
     )
 
     # Шаги 16–17: замороженные границы, clipping и проверка против domain.
-    bucketizer = Bucketizer(artifacts.bucket_edges, configs.schema, monitor=monitor)
+    bucketizer = Bucketizer(
+        artifacts.bucket_edges, configs.schema, monitor=monitor, debug=debug
+    )
     bucketed = list(bucketizer.transform(prepared))
 
     # Шаги 21–22: порядок §13 и локальные календарные признаки §25.
     # Шаг 23 выполняется тем, что `delta_prev` здесь не считается вовсе.
-    records = order_timeline(configs, settings, bucketed)
+    records = order_timeline(configs, settings, bucketed, debug=debug)
+
+    debug.write()
 
     # Шаг 24: финальная проверка контракта §2.2.
     contract = validate_output(

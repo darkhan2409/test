@@ -202,6 +202,11 @@ class Sessionizer:
                     self._debug.record(COMPONENT, Stage.IN, [record.debug_row()])
                 actions[record.client_id or ""].append(record)
             else:
+                if tracing:
+                    # Запись не из app-логов компонент не трогает, но она через
+                    # него проходит: без этой строки шаг 7 выглядел бы в
+                    # трассировке пропущенным.
+                    self._debug.record(COMPONENT, Stage.IN, [record.debug_row()])
                 passthrough.append(record)
 
         built = [
@@ -213,7 +218,7 @@ class Sessionizer:
         self.report.sessions_built = len(built)
 
         for record in sorted(passthrough + built, key=_canonical_position):
-            if tracing and record.event_type == SESSION_EVENT_TYPE:
+            if tracing:
                 self._debug.record(COMPONENT, Stage.OUT, [record.debug_row()])
             yield record
 

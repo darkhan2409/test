@@ -132,6 +132,9 @@ class TimeFeatureBuilder:
                 yield record
                 continue
 
+            if tracing:
+                self._debug.record(COMPONENT, Stage.IN, [record.debug_row()])
+
             self._check_computable(record, started)
             zone = self._zone(record)
             local = record.timestamp_utc.astimezone(zone)

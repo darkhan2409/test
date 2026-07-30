@@ -27,6 +27,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import StrEnum
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -96,6 +97,25 @@ COMPONENTS_BY_NAME: dict[str, Component] = {item.name: item for item in COMPONEN
 # До EventMapper (компонент 6) event_id ещё не существует: его считает именно
 # он (§8). Более ранние компоненты привязываются к source_record_id.
 EVENT_ID_AVAILABLE_FROM = COMPONENTS_BY_NAME["event_mapper"].order
+
+
+def _jsonable(value: Any) -> str:
+    """Единственное преобразование, которое дампу разрешено делать самому.
+
+    Между §17 и §19 значение поля живёт как `Decimal`, и обычный `json.dumps`
+    на нём падает. Печатается оно строкой, а не через `float`: `float` от
+    `Decimal("25.99")` даёт `25.989999999999998`, а дамп читают глазами и
+    сверяют с выходом.
+
+    Всё остальное — ошибка, а не повод молча позвать `str()`: неожиданный тип
+    в дампе означает, что компонент отдал в трассировку не то, что обещал.
+    """
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError(
+        f"{type(value).__name__} не сериализуется в дамп трассировки; "
+        "компонент обязан отдавать в debug_row готовые к печати значения"
+    )
 
 
 class DebugDumpError(ValueError):
@@ -234,7 +254,8 @@ class DebugDump:
             component_dir.mkdir(parents=True, exist_ok=True)
             path = component_dir / f"{stage}.jsonl"
             payload = "".join(
-                json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
+                json.dumps(row, ensure_ascii=False, sort_keys=True, default=_jsonable) + "\n"
+                for row in rows
             )
             path.write_bytes(payload.encode("utf-8"))
             written.append(path)

@@ -252,6 +252,10 @@ class ProfileBuilder:
                     snapshots.setdefault(record.client_id, []).append(record)
                 continue
 
+            if tracing:
+                # Событие компонент не меняет, но проходит через него: без этой
+                # строки шаг 15 выглядел бы в трассировке пропущенным.
+                self._debug.record(COMPONENT, Stage.IN, [record.debug_row()])
             events.append(record)
             if record.client_id is None or record.event_type is None:
                 continue
@@ -259,6 +263,10 @@ class ProfileBuilder:
             for aggregate in aggregates[record.client_id].values():
                 aggregate.add(record)
 
+        if tracing:
+            self._debug.record(
+                COMPONENT, Stage.OUT, (record.debug_row() for record in events)
+            )
         yield from events
 
         for client_id in sorted(set(snapshots) | set(aggregates)):
